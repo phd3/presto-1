@@ -157,6 +157,11 @@ public final class Patterns
         return typeOf(TopNNode.class);
     }
 
+    public static Pattern<TopNRowNumberNode> topNRowNumber()
+    {
+        return typeOf(TopNRowNumberNode.class);
+    }
+
     public static Pattern<UnionNode> union()
     {
         return typeOf(UnionNode.class);
@@ -190,6 +195,11 @@ public final class Patterns
     public static Pattern<ExceptNode> except()
     {
         return typeOf(ExceptNode.class);
+    }
+
+    public static Pattern<UnnestNode> unnest()
+    {
+        return typeOf(UnnestNode.class);
     }
 
     public static Property<PlanNode, Lookup, PlanNode> source()

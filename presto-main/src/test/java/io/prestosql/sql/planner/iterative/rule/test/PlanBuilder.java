@@ -64,11 +64,9 @@ import io.prestosql.sql.planner.plan.LimitNode;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.OffsetNode;
 import io.prestosql.sql.planner.plan.OutputNode;
-import io.prestosql.sql.planner.plan.PlanFragmentId;
 import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.PlanNodeId;
 import io.prestosql.sql.planner.plan.ProjectNode;
-import io.prestosql.sql.planner.plan.RemoteSourceNode;
 import io.prestosql.sql.planner.plan.RowNumberNode;
 import io.prestosql.sql.planner.plan.SampleNode;
 import io.prestosql.sql.planner.plan.SemiJoinNode;
@@ -78,7 +76,9 @@ import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.planner.plan.TableWriterNode;
 import io.prestosql.sql.planner.plan.TableWriterNode.DeleteTarget;
 import io.prestosql.sql.planner.plan.TopNNode;
+import io.prestosql.sql.planner.plan.TopNRowNumberNode;
 import io.prestosql.sql.planner.plan.UnionNode;
+import io.prestosql.sql.planner.plan.UnnestNode;
 import io.prestosql.sql.planner.plan.ValuesNode;
 import io.prestosql.sql.planner.plan.WindowNode;
 import io.prestosql.sql.tree.Expression;
@@ -534,6 +534,25 @@ public class PlanBuilder
                 .addInputsSet(child.getOutputSymbols()));
     }
 
+    public UnnestNode unnest(
+            List<Symbol> replicateSymbols,
+            Map<Symbol, List<Symbol>> unnestSymbols,
+            Optional<Symbol> ordinalitySymbol,
+            JoinNode.Type joinType,
+            Optional<Expression> filter,
+            PlanNode source)
+
+    {
+        return new UnnestNode(
+                idAllocator.getNextId(),
+                source,
+                replicateSymbols,
+                unnestSymbols,
+                ordinalitySymbol,
+                joinType,
+                filter);
+    }
+
     public SemiJoinNode semiJoin(
             Symbol sourceJoinSymbol,
             Symbol filteringSourceJoinSymbol,
@@ -887,6 +906,24 @@ public class PlanBuilder
                 partitionBy,
                 rowNumberSymbol,
                 maxRowCountPerPartition,
+                hashSymbol);
+    }
+
+    public TopNRowNumberNode topNRowNumber(
+            WindowNode.Specification specification,
+            int maxRowCountPerPartition,
+            Symbol rowNumberSymbol,
+            Optional<Symbol> hashSymbol,
+            boolean partial,
+            PlanNode source)
+    {
+        return new TopNRowNumberNode(
+                idAllocator.getNextId(),
+                source,
+                specification,
+                rowNumberSymbol,
+                maxRowCountPerPartition,
+                partial,
                 hashSymbol);
     }
 
