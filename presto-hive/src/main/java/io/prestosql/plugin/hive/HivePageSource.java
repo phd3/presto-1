@@ -117,6 +117,7 @@ public class HivePageSource
 {
     private final List<ColumnMapping> columnMappings;
     private final Optional<BucketAdapter> bucketAdapter;
+    private final Optional<HivePageSourceProvider.DereferenceAdaptation> dereferenceAdapter;
     private final Object[] prefilledValues;
     private final Type[] types;
     private final List<Optional<Function<Block, Block>>> coercers;
@@ -130,6 +131,17 @@ public class HivePageSource
             TypeManager typeManager,
             ConnectorPageSource delegate)
     {
+        this(columnMappings, bucketAdaptation, Optional.empty(), hiveStorageTimeZone, typeManager, delegate);
+    }
+
+    public HivePageSource(
+            List<ColumnMapping> columnMappings,
+            Optional<BucketAdaptation> bucketAdaptation,
+            Optional<HivePageSourceProvider.DereferenceAdaptation> dereferenceAdaptation,
+            DateTimeZone hiveStorageTimeZone,
+            TypeManager typeManager,
+            ConnectorPageSource delegate)
+    {
         requireNonNull(columnMappings, "columnMappings is null");
         requireNonNull(hiveStorageTimeZone, "hiveStorageTimeZone is null");
         requireNonNull(typeManager, "typeManager is null");
@@ -137,6 +149,7 @@ public class HivePageSource
         this.delegate = requireNonNull(delegate, "delegate is null");
         this.columnMappings = columnMappings;
         this.bucketAdapter = bucketAdaptation.map(BucketAdapter::new);
+        this.dereferenceAdapter = dereferenceAdaptation;
 
         int size = columnMappings.size();
 
@@ -274,7 +287,14 @@ public class HivePageSource
                         throw new UnsupportedOperationException();
                 }
             }
-            return new Page(batchSize, blocks.toArray(new Block[0]));
+
+            Page page = new Page(batchSize, blocks.toArray(new Block[0]));
+
+            if (dereferenceAdapter.isPresent()) {
+                page = dereferenceAdapter.get().adaptPage(page);
+            }
+
+            return page;
         }
         catch (PrestoException e) {
             closeWithSuppression(e);

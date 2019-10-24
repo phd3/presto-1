@@ -217,8 +217,8 @@ public class OrcPageSourceFactory
                 if (useOrcColumnNames) {
                     orcColumn = fileColumnsByName.get(column.getName().toLowerCase(ENGLISH));
                 }
-                else if (column.getHiveColumnIndex() < fileColumns.size()) {
-                    orcColumn = fileColumns.get(column.getHiveColumnIndex());
+                else if (column.getBaseHiveColumnIndex() < fileColumns.size()) {
+                    orcColumn = fileColumns.get(column.getBaseHiveColumnIndex());
                 }
 
                 Type readType = column.getType();

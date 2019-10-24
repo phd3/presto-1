@@ -18,6 +18,10 @@ import com.google.common.collect.ImmutableSet;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
 import io.prestosql.plugin.hive.HiveSplit.BucketConversion;
 import io.prestosql.plugin.hive.util.HiveBucketing.BucketingVersion;
+import io.prestosql.spi.Page;
+import io.prestosql.spi.block.Block;
+import io.prestosql.spi.block.LazyBlock;
+import io.prestosql.spi.block.LazyBlockLoader;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorPageSource;
 import io.prestosql.spi.connector.ConnectorPageSourceProvider;
@@ -37,6 +41,7 @@ import org.joda.time.DateTimeZone;
 
 import javax.inject.Inject;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -52,8 +57,10 @@ import static com.google.common.collect.Maps.uniqueIndex;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.SYNTHESIZED;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.plugin.hive.HivePageSourceProvider.ColumnMapping.toColumnHandles;
 import static io.prestosql.plugin.hive.util.HiveUtil.getPrefilledColumnValue;
+import static io.prestosql.spi.block.ColumnarRow.toColumnarRow;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -142,7 +149,7 @@ public class HivePageSourceProvider
             long fileModifiedTime,
             Properties schema,
             TupleDomain<HiveColumnHandle> effectivePredicate,
-            List<HiveColumnHandle> hiveColumns,
+            List<HiveColumnHandle> hiveNestedColumns,
             List<HivePartitionKey> partitionKeys,
             DateTimeZone hiveStorageTimeZone,
             TypeManager typeManager,
@@ -153,6 +160,28 @@ public class HivePageSourceProvider
         if (effectivePredicate.isNone()) {
             return Optional.of(new FixedPageSource(ImmutableList.of()));
         }
+
+        ImmutableList.Builder<HiveColumnHandle> hiveColumnsBuilder = ImmutableList.builder();
+        Map<Integer, Integer> baseColumnIndexToChannelIndex = new HashMap<>();
+        int channelIndex = 0;
+        for (HiveColumnHandle column : hiveNestedColumns) {
+            int index = column.getBaseHiveColumnIndex();
+            if (!baseColumnIndexToChannelIndex.containsKey(index)) {
+                baseColumnIndexToChannelIndex.put(index, channelIndex);
+                hiveColumnsBuilder.add(createTopLevelHiveColumnHandle(
+                        column.getBaseColumnName(),
+                        column.getBaseHiveColumnIndex(),
+                        column.getBaseColumnHiveType(),
+                        column.getBaseColumnType(),
+                        column.getColumnType(),
+                        column.getComment()));
+                channelIndex++;
+            }
+        }
+
+        DereferenceAdaptation dereferenceAdaptation = new DereferenceAdaptation(hiveNestedColumns, baseColumnIndexToChannelIndex);
+
+        List<HiveColumnHandle> hiveColumns = hiveColumnsBuilder.build();
 
         List<ColumnMapping> columnMappings = ColumnMapping.buildColumnMappings(
                 partitionKeys,
@@ -166,12 +195,12 @@ public class HivePageSourceProvider
         List<ColumnMapping> regularAndInterimColumnMappings = ColumnMapping.extractRegularAndInterimColumnMappings(columnMappings);
 
         Optional<BucketAdaptation> bucketAdaptation = bucketConversion.map(conversion -> {
-            Map<Integer, ColumnMapping> hiveIndexToBlockIndex = uniqueIndex(regularAndInterimColumnMappings, columnMapping -> columnMapping.getHiveColumnHandle().getHiveColumnIndex());
+            Map<Integer, ColumnMapping> hiveIndexToBlockIndex = uniqueIndex(regularAndInterimColumnMappings, columnMapping -> columnMapping.getHiveColumnHandle().getBaseHiveColumnIndex());
             int[] bucketColumnIndices = conversion.getBucketColumnHandles().stream()
-                    .mapToInt(columnHandle -> hiveIndexToBlockIndex.get(columnHandle.getHiveColumnIndex()).getIndex())
+                    .mapToInt(columnHandle -> hiveIndexToBlockIndex.get(columnHandle.getBaseHiveColumnIndex()).getIndex())
                     .toArray();
             List<HiveType> bucketColumnHiveTypes = conversion.getBucketColumnHandles().stream()
-                    .map(columnHandle -> hiveIndexToBlockIndex.get(columnHandle.getHiveColumnIndex()).getHiveColumnHandle().getHiveType())
+                    .map(columnHandle -> hiveIndexToBlockIndex.get(columnHandle.getBaseHiveColumnIndex()).getHiveColumnHandle().getHiveType())
                     .collect(toImmutableList());
             return new BucketAdaptation(
                     bucketColumnIndices,
@@ -199,6 +228,7 @@ public class HivePageSourceProvider
                         new HivePageSource(
                                 columnMappings,
                                 bucketAdaptation,
+                                Optional.of(dereferenceAdaptation),
                                 hiveStorageTimeZone,
                                 typeManager,
                                 pageSource.get()));
@@ -344,9 +374,9 @@ public class HivePageSourceProvider
             Set<Integer> regularColumnIndices = new HashSet<>();
             ImmutableList.Builder<ColumnMapping> columnMappings = ImmutableList.builder();
             for (HiveColumnHandle column : columns) {
-                Optional<HiveType> coercionFrom = Optional.ofNullable(columnCoercions.get(column.getHiveColumnIndex()));
+                Optional<HiveType> coercionFrom = Optional.ofNullable(columnCoercions.get(column.getBaseHiveColumnIndex()));
                 if (column.getColumnType() == REGULAR) {
-                    checkArgument(regularColumnIndices.add(column.getHiveColumnIndex()), "duplicate hiveColumnIndex in columns list");
+                    checkArgument(regularColumnIndices.add(column.getBaseHiveColumnIndex()), "duplicate hiveColumnIndex in columns list");
                     columnMappings.add(regular(column, regularIndex, coercionFrom));
                     regularIndex++;
                 }
@@ -359,7 +389,7 @@ public class HivePageSourceProvider
             }
             for (HiveColumnHandle column : requiredInterimColumns) {
                 checkArgument(column.getColumnType() == REGULAR);
-                if (regularColumnIndices.contains(column.getHiveColumnIndex())) {
+                if (regularColumnIndices.contains(column.getBaseHiveColumnIndex())) {
                     continue; // This column exists in columns. Do not add it again.
                 }
                 // If coercion does not affect bucket number calculation, coercion doesn't need to be applied here.
@@ -386,11 +416,11 @@ public class HivePageSourceProvider
                         if (!doCoercion || !columnMapping.getCoercionFrom().isPresent()) {
                             return columnHandle;
                         }
-                        return new HiveColumnHandle(
+                        return createTopLevelHiveColumnHandle(
                                 columnHandle.getName(),
+                                columnHandle.getBaseHiveColumnIndex(),
                                 columnMapping.getCoercionFrom().get(),
                                 columnMapping.getCoercionFrom().get().getType(typeManager),
-                                columnHandle.getHiveColumnIndex(),
                                 columnHandle.getColumnType(),
                                 Optional.empty());
                     })
@@ -403,6 +433,66 @@ public class HivePageSourceProvider
         REGULAR,
         PREFILLED,
         INTERIM,
+    }
+
+    public static class DereferenceAdaptation
+    {
+        private final List<HiveColumnHandle> columns;
+        private final Map<Integer, Integer> baseColumnToChannel;
+
+        public DereferenceAdaptation(List<HiveColumnHandle> columns, Map<Integer, Integer> baseColumnToChannel)
+        {
+            this.columns = columns;
+            this.baseColumnToChannel = baseColumnToChannel;
+        }
+
+        public Page adaptPage(Page input)
+        {
+            Block[] blocks = new Block[columns.size()];
+
+            for (int i = 0; i < columns.size(); i++) {
+                HiveColumnHandle column = columns.get(i);
+                int channel = baseColumnToChannel.get(column.getBaseHiveColumnIndex());
+                blocks[i] = createNestedLazyBlock(input.getBlock(channel), column);
+            }
+
+            return new Page(blocks);
+        }
+
+        public static Block createNestedLazyBlock(Block base, HiveColumnHandle column)
+        {
+            List<Integer> dereferences = column.getDereferenceFieldIndices();
+            return new LazyBlock(base.getPositionCount(), new DereferenceBlockLoader(base, dereferences));
+        }
+    }
+
+    public static class DereferenceBlockLoader
+            implements LazyBlockLoader
+    {
+        boolean loaded;
+        private Block parentBlock;
+        private final List<Integer> dereferences;
+
+        DereferenceBlockLoader(Block parentBlock, List<Integer> dereferences)
+        {
+            this.parentBlock = parentBlock;
+            this.dereferences = dereferences;
+        }
+
+        @Override
+        public Block load()
+        {
+            checkState(!loaded, "Already loaded");
+            Block currentBlock = parentBlock;
+            for (int i = 0; i < dereferences.size(); i++) {
+                currentBlock = toColumnarRow(currentBlock).getField(dereferences.get(i));
+            }
+
+            Block loadedBlock = currentBlock.getLoadedBlock();
+            parentBlock = null;
+            loaded = true;
+            return loadedBlock;
+        }
     }
 
     public static class BucketAdaptation

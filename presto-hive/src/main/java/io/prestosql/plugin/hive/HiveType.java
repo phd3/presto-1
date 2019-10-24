@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
@@ -278,5 +279,42 @@ public final class HiveType
             default:
                 return null;
         }
+    }
+
+    public Optional<HiveType> getHiveTypeForDereferences(List<Integer> dereferences)
+    {
+        TypeInfo typeInfo = getTypeInfo();
+        for (int fieldIndex : dereferences) {
+            checkArgument(typeInfo instanceof StructTypeInfo, "typeInfo should be struct type", typeInfo);
+            StructTypeInfo structTypeInfo = (StructTypeInfo) typeInfo;
+            try {
+                typeInfo = structTypeInfo.getAllStructFieldTypeInfos().get(fieldIndex);
+            }
+            catch (RuntimeException e) {
+                return Optional.empty();
+            }
+        }
+        return Optional.of(toHiveType(typeInfo));
+    }
+
+    public List<String> getHiveDereferenceNames(List<Integer> dereferences)
+    {
+        ImmutableList.Builder<String> dereferenceNames = ImmutableList.builder();
+        TypeInfo typeInfo = getTypeInfo();
+        for (int fieldIndex : dereferences) {
+            checkArgument(typeInfo instanceof StructTypeInfo, "typeInfo should be struct type", typeInfo);
+            StructTypeInfo structTypeInfo = (StructTypeInfo) typeInfo;
+
+            try {
+                String fieldName = structTypeInfo.getAllStructFieldNames().get(fieldIndex);
+                dereferenceNames.add(fieldName);
+                typeInfo = structTypeInfo.getAllStructFieldTypeInfos().get(fieldIndex);
+            }
+            catch (RuntimeException e) {
+                return ImmutableList.of();
+            }
+        }
+
+        return dereferenceNames.build();
     }
 }

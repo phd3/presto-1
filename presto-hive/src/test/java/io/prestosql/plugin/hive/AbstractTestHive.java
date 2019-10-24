@@ -77,12 +77,17 @@ import io.prestosql.spi.connector.ConnectorViewDefinition.ViewColumn;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.DiscretePredicates;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult.Assignment;
 import io.prestosql.spi.connector.RecordCursor;
 import io.prestosql.spi.connector.RecordPageSource;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.TableNotFoundException;
 import io.prestosql.spi.connector.ViewNotFoundException;
+import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.expression.FieldDereference;
+import io.prestosql.spi.expression.Variable;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.NullableValue;
 import io.prestosql.spi.predicate.Range;
@@ -133,6 +138,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -175,6 +181,7 @@ import static io.prestosql.plugin.hive.HiveColumnHandle.BUCKET_COLUMN_NAME;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.prestosql.plugin.hive.HiveColumnHandle.bucketColumnHandle;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
 import static io.prestosql.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
@@ -624,11 +631,11 @@ public abstract class AbstractTestHive
 
         invalidTableHandle = new HiveTableHandle(database, INVALID_TABLE, ImmutableMap.of(), ImmutableList.of(), Optional.empty());
 
-        dsColumn = new HiveColumnHandle("ds", HIVE_STRING, VARCHAR, -1, PARTITION_KEY, Optional.empty());
-        fileFormatColumn = new HiveColumnHandle("file_format", HIVE_STRING, VARCHAR, -1, PARTITION_KEY, Optional.empty());
-        dummyColumn = new HiveColumnHandle("dummy", HIVE_INT, INTEGER, -1, PARTITION_KEY, Optional.empty());
-        intColumn = new HiveColumnHandle("t_int", HIVE_INT, INTEGER, -1, PARTITION_KEY, Optional.empty());
-        invalidColumnHandle = new HiveColumnHandle(INVALID_COLUMN, HIVE_STRING, VARCHAR, 0, REGULAR, Optional.empty());
+        dsColumn = createTopLevelHiveColumnHandle("ds", -1, HIVE_STRING, VARCHAR, PARTITION_KEY, Optional.empty());
+        fileFormatColumn = createTopLevelHiveColumnHandle("file_format", -1, HIVE_STRING, VARCHAR, PARTITION_KEY, Optional.empty());
+        dummyColumn = createTopLevelHiveColumnHandle("dummy", -1, HIVE_INT, INTEGER, PARTITION_KEY, Optional.empty());
+        intColumn = createTopLevelHiveColumnHandle("t_int", -1, HIVE_INT, INTEGER, PARTITION_KEY, Optional.empty());
+        invalidColumnHandle = createTopLevelHiveColumnHandle(INVALID_COLUMN, 0, HIVE_STRING, VARCHAR, REGULAR, Optional.empty());
 
         List<ColumnHandle> partitionColumns = ImmutableList.of(dsColumn, fileFormatColumn, dummyColumn);
         tablePartitionFormatPartitions = ImmutableList.<HivePartition>builder()
@@ -983,6 +990,149 @@ public abstract class AbstractTestHive
             assertExpectedTableProperties(properties, tablePartitionFormatProperties);
             assertExpectedPartitions(tableHandle, tablePartitionFormatPartitions);
         }
+    }
+
+    @Test
+    public void testApplyProjection()
+            throws Exception
+    {
+        ColumnMetadata bigIntColumn0 = new ColumnMetadata("int0", BIGINT);
+        ColumnMetadata bigIntColumn1 = new ColumnMetadata("int1", BIGINT);
+
+        RowType oneLevelRowType = toRowType(ImmutableList.of(bigIntColumn0, bigIntColumn1));
+        ColumnMetadata oneLevelRow0 = new ColumnMetadata("onelevelrow0", oneLevelRowType);
+
+        RowType twoLevelRowType = toRowType(ImmutableList.of(oneLevelRow0, bigIntColumn0, bigIntColumn1));
+        ColumnMetadata twoLevelRow0 = new ColumnMetadata("twolevelrow0", twoLevelRowType);
+
+        List<ColumnMetadata> columnsForApplyProjectionTest = ImmutableList.of(bigIntColumn0, bigIntColumn1, oneLevelRow0, twoLevelRow0);
+
+        SchemaTableName tableName = temporaryTable("apply_projection_tester");
+        doCreateEmptyTable(tableName, ORC, columnsForApplyProjectionTest);
+
+        try (Transaction transaction = newTransaction()) {
+            ConnectorSession session = newSession();
+            ConnectorMetadata metadata = transaction.getMetadata();
+            ConnectorTableHandle tableHandle = getTableHandle(metadata, tableName);
+
+            List<ColumnHandle> columnHandles = metadata.getColumnHandles(session, tableHandle).values().stream()
+                    .filter(columnHandle -> !((HiveColumnHandle) columnHandle).isHidden())
+                    .collect(toList());
+            assertEquals(columnHandles.size(), columnsForApplyProjectionTest.size());
+
+            Map<String, ColumnHandle> columnHandleMap = columnHandles.stream()
+                    .collect(toImmutableMap(handle -> ((HiveColumnHandle) handle).getBaseColumnName(), Function.identity()));
+
+            // Emulate symbols coming from the query plan and map them to column handles
+            Map<String, ColumnHandle> columnHandlesWithSymbols = ImmutableMap.of(
+                    "symbol_0", columnHandleMap.get("int0"),
+                    "symbol_1", columnHandleMap.get("int1"),
+                    "symbol_2", columnHandleMap.get("onelevelrow0"),
+                    "symbol_3", columnHandleMap.get("twolevelrow0"));
+
+            // Create variables for the emulated symbols
+            Map<String, Variable> symbolVariableMapping = columnHandlesWithSymbols.entrySet().stream()
+                    .collect(toImmutableMap(
+                            e -> e.getKey(),
+                            e -> new Variable(
+                                    e.getKey(),
+                                    ((HiveColumnHandle) e.getValue()).getBaseColumnType())));
+
+            // Create dereference expressions for testing
+            FieldDereference symbol2Field0 = new FieldDereference(BIGINT, symbolVariableMapping.get("symbol_2"), 0);
+            FieldDereference symbol3Field0 = new FieldDereference(oneLevelRowType, symbolVariableMapping.get("symbol_3"), 0);
+            FieldDereference symbol3Field0Field0 = new FieldDereference(BIGINT, symbol3Field0, 0);
+            FieldDereference symbol3Field1 = new FieldDereference(BIGINT, symbolVariableMapping.get("symbol_3"), 1);
+
+            Map<String, ColumnHandle> inputAssignments;
+            List<ConnectorExpression> inputProjections;
+            Optional<ProjectionApplicationResult<ConnectorTableHandle>> projectionResult;
+            List<ConnectorExpression> expectedProjections;
+            Map<String, Type> expectedAssignments;
+
+            // Test no projection pushdown for column references
+            inputAssignments = getColumnHandlesFor(columnHandlesWithSymbols, ImmutableList.of("symbol_0", "symbol_1"));
+            inputProjections = ImmutableList.of(symbolVariableMapping.get("symbol_0"), symbolVariableMapping.get("symbol_1"));
+            projectionResult = metadata.applyProjection(session, tableHandle, inputProjections, inputAssignments);
+            assertProjectionResult(projectionResult, true, ImmutableList.of(), ImmutableMap.of());
+
+            // Test projection pushdown for simple column references (column pruning)
+            inputAssignments = getColumnHandlesFor(columnHandlesWithSymbols, ImmutableList.of("symbol_0", "symbol_1"));
+            inputProjections = ImmutableList.of(symbolVariableMapping.get("symbol_0"));
+            projectionResult = metadata.applyProjection(session, tableHandle, inputProjections, inputAssignments);
+            expectedProjections = ImmutableList.of(symbolVariableMapping.get("symbol_0"));
+            expectedAssignments = ImmutableMap.of("symbol_0", BIGINT);
+            assertProjectionResult(projectionResult, false, expectedProjections, expectedAssignments);
+
+            // Test projection pushdown for dereferences
+            inputAssignments = getColumnHandlesFor(columnHandlesWithSymbols, ImmutableList.of("symbol_2", "symbol_3"));
+            inputProjections = ImmutableList.of(symbol2Field0, symbol3Field0Field0, symbol3Field1);
+            expectedAssignments = ImmutableMap.of(
+                    "onelevelrow0#f_int0", BIGINT,
+                    "twolevelrow0#f_onelevelrow0#f_int0", BIGINT,
+                    "twolevelrow0#f_int0", BIGINT);
+            expectedProjections = ImmutableList.of(
+                    new Variable("onelevelrow0#f_int0", BIGINT),
+                    new Variable("twolevelrow0#f_onelevelrow0#f_int0", BIGINT),
+                    new Variable("twolevelrow0#f_int0", BIGINT));
+            projectionResult = metadata.applyProjection(session, tableHandle, inputProjections, inputAssignments);
+            assertProjectionResult(projectionResult, false, expectedProjections, expectedAssignments);
+
+            // Test merging of dereference pushdown
+            inputAssignments = getColumnHandlesFor(columnHandlesWithSymbols, ImmutableList.of("symbol_2", "symbol_3"));
+            inputProjections = ImmutableList.of(symbol3Field0Field0, symbol3Field0, symbol3Field1);
+            projectionResult = metadata.applyProjection(session, tableHandle, inputProjections, inputAssignments);
+            expectedProjections = ImmutableList.of(
+                    new FieldDereference(BIGINT, new Variable("twolevelrow0#f_onelevelrow0", oneLevelRowType), 0),
+                    new Variable("twolevelrow0#f_onelevelrow0", oneLevelRowType),
+                    new Variable("twolevelrow0#f_int0", BIGINT));
+            expectedAssignments = ImmutableMap.of("twolevelrow0#f_onelevelrow0", oneLevelRowType, "twolevelrow0#f_int0", BIGINT);
+            assertProjectionResult(projectionResult, false, expectedProjections, expectedAssignments);
+
+            // Test no dereference pushdown when the complete column is present
+            inputAssignments = getColumnHandlesFor(columnHandlesWithSymbols, ImmutableList.of("symbol_2"));
+            inputProjections = ImmutableList.of(symbol2Field0, symbolVariableMapping.get("symbol_2"));
+            projectionResult = metadata.applyProjection(session, tableHandle, inputProjections, inputAssignments);
+            assertProjectionResult(projectionResult, true, ImmutableList.of(), ImmutableMap.of());
+        }
+        finally {
+            dropTable(tableName);
+        }
+    }
+
+    private static Map<String, ColumnHandle> getColumnHandlesFor(Map<String, ColumnHandle> columnHandles, List<String> symbols)
+    {
+        return columnHandles.entrySet().stream()
+                .filter(e -> symbols.contains(e.getKey()))
+                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    private static void assertProjectionResult(Optional<ProjectionApplicationResult<ConnectorTableHandle>> projectionResult, boolean shouldBeEmpty, List<ConnectorExpression> expectedProjections, Map<String, Type> expectedAssignments)
+    {
+        if (shouldBeEmpty) {
+            assertTrue(!projectionResult.isPresent(), "expected projectionResult to be empty");
+            return;
+        }
+
+        assertTrue(projectionResult.isPresent(), "expected non-empty projection result");
+
+        ProjectionApplicationResult result = projectionResult.get();
+
+        // Verify projections
+        assertEquals(expectedProjections, result.getProjections());
+
+        // Verify assignments
+        List<Assignment> assignments = result.getAssignments();
+        Map<String, Assignment> actualAssignments = uniqueIndex(assignments, Assignment::getVariable);
+
+        for (String variable : expectedAssignments.keySet()) {
+            Type expectedType = expectedAssignments.get(variable);
+            assertTrue(actualAssignments.containsKey(variable));
+            assertEquals(actualAssignments.get(variable).getType(), expectedType);
+            assertEquals(((HiveColumnHandle) actualAssignments.get(variable).getColumn()).getType(), expectedType);
+        }
+
+        assertEquals(actualAssignments.size(), expectedAssignments.size());
     }
 
     @Test

@@ -15,12 +15,15 @@ package io.prestosql.plugin.hive;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableList;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.type.Type;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
@@ -65,29 +68,62 @@ public class HiveColumnHandle
         SYNTHESIZED,
     }
 
+    private final String baseColumnName;
+    private final int baseHiveColumnIndex;
+    private final HiveType baseColumnHiveType;
+    private final Type baseColumnType;
+
+    private final List<String> dereferenceFieldNames;
+    private final List<Integer> dereferenceFieldIndices;
+
     private final String name;
+
     private final HiveType hiveType;
     private final Type type;
-    private final int hiveColumnIndex;
+
     private final ColumnType columnType;
     private final Optional<String> comment;
 
     @JsonCreator
     public HiveColumnHandle(
-            @JsonProperty("name") String name,
+            @JsonProperty("baseColumnName") String baseColumnName,
+            @JsonProperty("baseHiveColumnIndex") int baseHiveColumnIndex,
+            @JsonProperty("baseColumnHiveType") HiveType baseColumnHiveType,
+            @JsonProperty("baseColumnType") Type baseColumnType,
+            @JsonProperty("dereferenceFieldNames") List<String> dereferenceFieldNames,
+            @JsonProperty("dereferenceFieldIndices") List<Integer> dereferenceFieldIndices,
             @JsonProperty("hiveType") HiveType hiveType,
             @JsonProperty("type") Type type,
-            @JsonProperty("hiveColumnIndex") int hiveColumnIndex,
             @JsonProperty("columnType") ColumnType columnType,
             @JsonProperty("comment") Optional<String> comment)
     {
-        this.name = requireNonNull(name, "name is null");
-        checkArgument(hiveColumnIndex >= 0 || columnType == PARTITION_KEY || columnType == SYNTHESIZED, "hiveColumnIndex is negative");
-        this.hiveColumnIndex = hiveColumnIndex;
+        this.baseColumnName = requireNonNull(baseColumnName, "baseColumnName is null");
+        checkArgument(baseHiveColumnIndex >= 0 || columnType == PARTITION_KEY || columnType == SYNTHESIZED, "baseHiveColumnIndex is negative");
+        this.baseHiveColumnIndex = baseHiveColumnIndex;
+        this.baseColumnHiveType = baseColumnHiveType;
+        this.baseColumnType = baseColumnType;
+
+        this.dereferenceFieldNames = ImmutableList.copyOf(requireNonNull(dereferenceFieldNames, "dereferenceFieldNames is null"));
+        this.dereferenceFieldIndices = ImmutableList.copyOf(requireNonNull(dereferenceFieldIndices, "dereferenceFieldIndices is null"));
+        checkArgument(dereferenceFieldIndices.size() == dereferenceFieldNames.size(), "dereference field names and indices should have the same sizes");
+
+        this.name = this.baseColumnName + dereferenceFieldNames.stream().map(name -> "#" + name).collect(Collectors.joining());
+
         this.hiveType = requireNonNull(hiveType, "hiveType is null");
         this.type = requireNonNull(type, "type is null");
         this.columnType = requireNonNull(columnType, "columnType is null");
         this.comment = requireNonNull(comment, "comment is null");
+    }
+
+    public static HiveColumnHandle createTopLevelHiveColumnHandle(
+            String topLevelColumnName,
+            int topLevelColumnIndex,
+            HiveType hiveType,
+            Type type,
+            ColumnType columnType,
+            Optional<String> comment)
+    {
+        return new HiveColumnHandle(topLevelColumnName, topLevelColumnIndex, hiveType, type, ImmutableList.of(), ImmutableList.of(), hiveType, type, columnType, comment);
     }
 
     @JsonProperty
@@ -97,15 +133,33 @@ public class HiveColumnHandle
     }
 
     @JsonProperty
+    public String getBaseColumnName()
+    {
+        return baseColumnName;
+    }
+
+    @JsonProperty
+    public HiveType getBaseColumnHiveType()
+    {
+        return baseColumnHiveType;
+    }
+
+    @JsonProperty
+    public Type getBaseColumnType()
+    {
+        return baseColumnType;
+    }
+
+    @JsonProperty
     public HiveType getHiveType()
     {
         return hiveType;
     }
 
     @JsonProperty
-    public int getHiveColumnIndex()
+    public int getBaseHiveColumnIndex()
     {
-        return hiveColumnIndex;
+        return baseHiveColumnIndex;
     }
 
     public boolean isPartitionKey()
@@ -141,10 +195,27 @@ public class HiveColumnHandle
         return columnType;
     }
 
+    @JsonProperty
+    public List<String> getDereferenceFieldNames()
+    {
+        return dereferenceFieldNames;
+    }
+
+    @JsonProperty
+    public List<Integer> getDereferenceFieldIndices()
+    {
+        return dereferenceFieldIndices;
+    }
+
+    public boolean isBaseColumn()
+    {
+        return dereferenceFieldIndices.size() == 0;
+    }
+
     @Override
     public int hashCode()
     {
-        return Objects.hash(name, hiveColumnIndex, hiveType, columnType, comment);
+        return Objects.hash(baseColumnName, baseHiveColumnIndex, dereferenceFieldIndices, dereferenceFieldNames, name, hiveType, columnType, comment);
     }
 
     @Override
@@ -157,8 +228,13 @@ public class HiveColumnHandle
             return false;
         }
         HiveColumnHandle other = (HiveColumnHandle) obj;
-        return Objects.equals(this.name, other.name) &&
-                Objects.equals(this.hiveColumnIndex, other.hiveColumnIndex) &&
+        return Objects.equals(this.baseColumnName, other.baseColumnName) &&
+                Objects.equals(this.baseHiveColumnIndex, other.baseHiveColumnIndex) &&
+                Objects.equals(this.baseColumnHiveType, other.baseColumnHiveType) &&
+                Objects.equals(this.baseColumnType, other.baseColumnType) &&
+                Objects.equals(this.dereferenceFieldIndices, other.dereferenceFieldIndices) &&
+                Objects.equals(this.dereferenceFieldNames, other.dereferenceFieldNames) &&
+                Objects.equals(this.name, other.name) &&
                 Objects.equals(this.hiveType, other.hiveType) &&
                 this.columnType == other.columnType &&
                 Objects.equals(this.comment, other.comment);
@@ -167,7 +243,7 @@ public class HiveColumnHandle
     @Override
     public String toString()
     {
-        return name + ":" + hiveType + ":" + hiveColumnIndex + ":" + columnType;
+        return name + ":" + hiveType + ":" + ":" + columnType;
     }
 
     public static HiveColumnHandle updateRowIdHandle()
@@ -178,12 +254,12 @@ public class HiveColumnHandle
         // plan-time support for row-by-row delete so that planning doesn't fail. This is why we need
         // rowid handle. Note that in Hive connector, rowid handle is not implemented beyond plan-time.
 
-        return new HiveColumnHandle(UPDATE_ROW_ID_COLUMN_NAME, HIVE_LONG, BIGINT, -1, SYNTHESIZED, Optional.empty());
+        return createTopLevelHiveColumnHandle(UPDATE_ROW_ID_COLUMN_NAME, -1, HIVE_LONG, BIGINT, SYNTHESIZED, Optional.empty());
     }
 
     public static HiveColumnHandle pathColumnHandle()
     {
-        return new HiveColumnHandle(PATH_COLUMN_NAME, PATH_HIVE_TYPE, PATH_TYPE, PATH_COLUMN_INDEX, SYNTHESIZED, Optional.empty());
+        return createTopLevelHiveColumnHandle(PATH_COLUMN_NAME, PATH_COLUMN_INDEX, PATH_HIVE_TYPE, PATH_TYPE, SYNTHESIZED, Optional.empty());
     }
 
     /**
@@ -193,36 +269,36 @@ public class HiveColumnHandle
      */
     public static HiveColumnHandle bucketColumnHandle()
     {
-        return new HiveColumnHandle(BUCKET_COLUMN_NAME, BUCKET_HIVE_TYPE, BUCKET_TYPE_SIGNATURE, BUCKET_COLUMN_INDEX, SYNTHESIZED, Optional.empty());
+        return createTopLevelHiveColumnHandle(BUCKET_COLUMN_NAME, BUCKET_COLUMN_INDEX, BUCKET_HIVE_TYPE, BUCKET_TYPE_SIGNATURE, SYNTHESIZED, Optional.empty());
     }
 
     public static HiveColumnHandle fileSizeColumnHandle()
     {
-        return new HiveColumnHandle(FILE_SIZE_COLUMN_NAME, FILE_SIZE_TYPE, FILE_SIZE_TYPE_SIGNATURE, FILE_SIZE_COLUMN_INDEX, SYNTHESIZED, Optional.empty());
+        return createTopLevelHiveColumnHandle(FILE_SIZE_COLUMN_NAME, FILE_SIZE_COLUMN_INDEX, FILE_SIZE_TYPE, FILE_SIZE_TYPE_SIGNATURE, SYNTHESIZED, Optional.empty());
     }
 
     public static HiveColumnHandle fileModifiedTimeColumnHandle()
     {
-        return new HiveColumnHandle(FILE_MODIFIED_TIME_COLUMN_NAME, FILE_MODIFIED_TIME_TYPE, FILE_MODIFIED_TIME_TYPE_SIGNATURE, FILE_MODIFIED_TIME_COLUMN_INDEX, SYNTHESIZED, Optional.empty());
+        return createTopLevelHiveColumnHandle(FILE_MODIFIED_TIME_COLUMN_NAME, FILE_MODIFIED_TIME_COLUMN_INDEX, FILE_MODIFIED_TIME_TYPE, FILE_MODIFIED_TIME_TYPE_SIGNATURE, SYNTHESIZED, Optional.empty());
     }
 
     public static boolean isPathColumnHandle(HiveColumnHandle column)
     {
-        return column.getHiveColumnIndex() == PATH_COLUMN_INDEX;
+        return column.getBaseHiveColumnIndex() == PATH_COLUMN_INDEX;
     }
 
     public static boolean isBucketColumnHandle(HiveColumnHandle column)
     {
-        return column.getHiveColumnIndex() == BUCKET_COLUMN_INDEX;
+        return column.getBaseHiveColumnIndex() == BUCKET_COLUMN_INDEX;
     }
 
     public static boolean isFileSizeColumnHandle(HiveColumnHandle column)
     {
-        return column.getHiveColumnIndex() == FILE_SIZE_COLUMN_INDEX;
+        return column.getBaseHiveColumnIndex() == FILE_SIZE_COLUMN_INDEX;
     }
 
     public static boolean isFileModifiedTimeColumnHandle(HiveColumnHandle column)
     {
-        return column.getHiveColumnIndex() == FILE_MODIFIED_TIME_COLUMN_INDEX;
+        return column.getBaseHiveColumnIndex() == FILE_MODIFIED_TIME_COLUMN_INDEX;
     }
 }

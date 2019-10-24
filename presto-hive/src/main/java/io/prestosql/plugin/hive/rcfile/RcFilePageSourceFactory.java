@@ -135,7 +135,7 @@ public class RcFilePageSourceFactory
         try {
             ImmutableMap.Builder<Integer, Type> readColumns = ImmutableMap.builder();
             for (HiveColumnHandle column : columns) {
-                readColumns.put(column.getHiveColumnIndex(), column.getHiveType().getType(typeManager));
+                readColumns.put(column.getBaseHiveColumnIndex(), column.getHiveType().getType(typeManager));
             }
 
             RcFileReader rcFileReader = new RcFileReader(

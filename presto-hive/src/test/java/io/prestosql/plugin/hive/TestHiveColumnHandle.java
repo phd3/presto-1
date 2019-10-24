@@ -25,6 +25,7 @@ import java.util.Optional;
 
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static org.testng.Assert.assertEquals;
 
@@ -40,14 +41,14 @@ public class TestHiveColumnHandle
     @Test
     public void testRegularColumn()
     {
-        HiveColumnHandle expectedPartitionColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, DOUBLE, 88, PARTITION_KEY, Optional.empty());
+        HiveColumnHandle expectedPartitionColumn = createTopLevelHiveColumnHandle("name", 88, HiveType.HIVE_FLOAT, DOUBLE, PARTITION_KEY, Optional.empty());
         testRoundTrip(expectedPartitionColumn);
     }
 
     @Test
     public void testPartitionKeyColumn()
     {
-        HiveColumnHandle expectedRegularColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, DOUBLE, 88, REGULAR, Optional.empty());
+        HiveColumnHandle expectedRegularColumn = createTopLevelHiveColumnHandle("name", 88, HiveType.HIVE_FLOAT, DOUBLE, REGULAR, Optional.empty());
         testRoundTrip(expectedRegularColumn);
     }
 
@@ -62,7 +63,7 @@ public class TestHiveColumnHandle
 
         assertEquals(actual.getName(), expected.getName());
         assertEquals(actual.getHiveType(), expected.getHiveType());
-        assertEquals(actual.getHiveColumnIndex(), expected.getHiveColumnIndex());
+        assertEquals(actual.getBaseHiveColumnIndex(), expected.getBaseHiveColumnIndex());
         assertEquals(actual.isPartitionKey(), expected.isPartitionKey());
     }
 }

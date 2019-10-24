@@ -85,6 +85,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.plugin.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
 import static io.prestosql.plugin.hive.HiveTestUtils.SESSION;
 import static io.prestosql.plugin.hive.HiveTestUtils.TYPE_MANAGER;
@@ -479,7 +480,7 @@ public abstract class AbstractTestHiveFileFormats
             int columnIndex = testColumn.isPartitionKey() ? -1 : nextHiveColumnIndex++;
 
             HiveType hiveType = HiveType.valueOf(testColumn.getObjectInspector().getTypeName());
-            columns.add(new HiveColumnHandle(testColumn.getName(), hiveType, hiveType.getType(TYPE_MANAGER), columnIndex, testColumn.isPartitionKey() ? PARTITION_KEY : REGULAR, Optional.empty()));
+            columns.add(createTopLevelHiveColumnHandle(testColumn.getName(), columnIndex, hiveType, hiveType.getType(TYPE_MANAGER), testColumn.isPartitionKey() ? PARTITION_KEY : REGULAR, Optional.empty()));
         }
         return columns;
     }

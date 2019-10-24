@@ -214,7 +214,7 @@ public class ParquetPageSourceFactory
                 prestoTypes.add(column.getType());
 
                 internalFields.add(parquetField.map(field -> {
-                    String columnName = useParquetColumnNames ? column.getName() : fileSchema.getFields().get(column.getHiveColumnIndex()).getName();
+                    String columnName = useParquetColumnNames ? column.getName() : fileSchema.getFields().get(column.getBaseHiveColumnIndex()).getName();
                     return constructField(column.getType(), lookupColumnByName(messageColumnIO, columnName)).orElse(null);
                 }));
             }
@@ -275,8 +275,8 @@ public class ParquetPageSourceFactory
             return getParquetTypeByName(column.getName(), messageType);
         }
 
-        if (column.getHiveColumnIndex() < messageType.getFieldCount()) {
-            return messageType.getType(column.getHiveColumnIndex());
+        if (column.getBaseHiveColumnIndex() < messageType.getFieldCount()) {
+            return messageType.getType(column.getBaseHiveColumnIndex());
         }
         return null;
     }

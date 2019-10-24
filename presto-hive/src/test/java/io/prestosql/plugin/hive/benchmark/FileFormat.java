@@ -64,6 +64,7 @@ import java.util.Properties;
 
 import static io.prestosql.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.plugin.hive.HiveTestUtils.TYPE_MANAGER;
 import static io.prestosql.plugin.hive.HiveTestUtils.createGenericHiveRecordCursorProvider;
 import static io.prestosql.plugin.hive.HiveType.toHiveType;
@@ -294,7 +295,7 @@ public enum FileFormat
         for (int i = 0; i < columnNames.size(); i++) {
             String columnName = columnNames.get(i);
             Type columnType = columnTypes.get(i);
-            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType, i, REGULAR, Optional.empty()));
+            columnHandles.add(createTopLevelHiveColumnHandle(columnName, i, toHiveType(typeTranslator, columnType), columnType, REGULAR, Optional.empty()));
         }
 
         RecordCursor recordCursor = cursorProvider
@@ -328,7 +329,7 @@ public enum FileFormat
         for (int i = 0; i < columnNames.size(); i++) {
             String columnName = columnNames.get(i);
             Type columnType = columnTypes.get(i);
-            columnHandles.add(new HiveColumnHandle(columnName, toHiveType(typeTranslator, columnType), columnType, i, REGULAR, Optional.empty()));
+            columnHandles.add(createTopLevelHiveColumnHandle(columnName, i, toHiveType(typeTranslator, columnType), columnType, REGULAR, Optional.empty()));
         }
 
         return pageSourceFactory

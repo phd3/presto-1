@@ -64,12 +64,16 @@ import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.DiscretePredicates;
 import io.prestosql.spi.connector.InMemoryRecordSet;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult.Assignment;
 import io.prestosql.spi.connector.RecordCursor;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.SystemTable;
 import io.prestosql.spi.connector.TableNotFoundException;
 import io.prestosql.spi.connector.ViewNotFoundException;
+import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.expression.Variable;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.NullableValue;
 import io.prestosql.spi.predicate.TupleDomain;
@@ -123,6 +127,10 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.concat;
 import static com.google.common.collect.Streams.stream;
 import static io.prestosql.plugin.hive.HiveAnalyzeProperties.getPartitionList;
+import static io.prestosql.plugin.hive.HiveApplyProjectionHelper.DereferenceInfo;
+import static io.prestosql.plugin.hive.HiveApplyProjectionHelper.getSupersetSubExpressions;
+import static io.prestosql.plugin.hive.HiveApplyProjectionHelper.getSupportedSubExpressions;
+import static io.prestosql.plugin.hive.HiveApplyProjectionHelper.replaceWithNewVariables;
 import static io.prestosql.plugin.hive.HiveBasicStatistics.createEmptyStatistics;
 import static io.prestosql.plugin.hive.HiveBasicStatistics.createZeroStatistics;
 import static io.prestosql.plugin.hive.HiveColumnHandle.BUCKET_COLUMN_NAME;
@@ -132,6 +140,7 @@ import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.SYNTHESIZED;
 import static io.prestosql.plugin.hive.HiveColumnHandle.FILE_MODIFIED_TIME_COLUMN_NAME;
 import static io.prestosql.plugin.hive.HiveColumnHandle.FILE_SIZE_COLUMN_NAME;
 import static io.prestosql.plugin.hive.HiveColumnHandle.PATH_COLUMN_NAME;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createTopLevelHiveColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.updateRowIdHandle;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_COLUMN_ORDER_MISMATCH;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CONCURRENT_MODIFICATION_DETECTED;
@@ -1801,6 +1810,92 @@ public class HiveMetadata
     }
 
     @Override
+    public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session, ConnectorTableHandle handle, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    {
+        // Extract unique supported subexpressions from projections
+        Set<ConnectorExpression> supportedSubExpressions = projections.stream()
+                .flatMap(expression -> getSupportedSubExpressions(expression).stream())
+                .collect(toImmutableSet());
+
+        // Get a superset of expressions. eg. superset of expressions {"a.b", "a.b.c"} is {"a.b"}.
+        Map<ConnectorExpression, DereferenceInfo> supersetSubExpressions = getSupersetSubExpressions(supportedSubExpressions);
+
+        ImmutableMap.Builder<String, Assignment> reusedHandlesBuilder = ImmutableMap.builder();
+        ImmutableMap.Builder<String, Assignment> newHandlesBuilder = ImmutableMap.builder();
+        ImmutableMap.Builder<ConnectorExpression, Variable> expressionToVariableMappings = ImmutableMap.builder();
+
+        // Create new column handles for superset expressions or reuse the input column handles.
+        for (Map.Entry<ConnectorExpression, DereferenceInfo> entry : supersetSubExpressions.entrySet()) {
+            ConnectorExpression expression = entry.getKey();
+            DereferenceInfo dereferenceChain = entry.getValue();
+
+            if (dereferenceChain.isVariable()) {
+                Variable variable = dereferenceChain.getVariable();
+                ColumnHandle columnHandle = assignments.get(variable.getName());
+                reusedHandlesBuilder.put(variable.getName(), new Assignment(variable.getName(), columnHandle, variable.getType()));
+            }
+            else {
+                Variable variable = dereferenceChain.getVariable();
+                HiveColumnHandle oldColumnHandle = (HiveColumnHandle) assignments.get(variable.getName());
+
+                HiveColumnHandle newColumnHandle = createNewHiveColumnHandle(oldColumnHandle, dereferenceChain);
+
+                Variable newVariable = new Variable(newColumnHandle.getName(), expression.getType());
+                Assignment newAssignment = new Assignment(newVariable.getName(), newColumnHandle, expression.getType());
+                newHandlesBuilder.put(newVariable.getName(), newAssignment);
+                expressionToVariableMappings.put(expression, newVariable);
+            }
+        }
+
+        Map<String, Assignment> newAssignments = newHandlesBuilder.build();
+        Map<String, Assignment> reusedAssignments = reusedHandlesBuilder.build();
+
+        if (newAssignments.isEmpty() && reusedAssignments.size() == assignments.size()) {
+            return Optional.empty();
+        }
+
+        List<Assignment> allAssignments = ImmutableList.<Assignment>builder()
+                .addAll(newAssignments.values())
+                .addAll(reusedAssignments.values())
+                .build();
+
+        // Modify projections to refer to new variables
+        List<ConnectorExpression> newProjections = projections.stream()
+                .map(expression -> replaceWithNewVariables(expression, expressionToVariableMappings.build()))
+                .collect(toImmutableList());
+
+        return Optional.of(new ProjectionApplicationResult<>(handle, newProjections, allAssignments));
+    }
+
+    private HiveColumnHandle createNewHiveColumnHandle(HiveColumnHandle oldColumnHandle, DereferenceInfo dereferenceChain)
+    {
+        HiveType oldHiveType = oldColumnHandle.getHiveType();
+        HiveType newHiveType = oldHiveType.getHiveTypeForDereferences(dereferenceChain.getDereferenceIndices()).get();
+
+        List<Integer> hiveDereferenceIndices = ImmutableList.<Integer>builder()
+                .addAll(oldColumnHandle.getDereferenceFieldIndices())
+                .addAll(dereferenceChain.getDereferenceIndices())
+                .build();
+
+        List<String> hiveDereferenceNames = ImmutableList.<String>builder()
+                .addAll(oldColumnHandle.getDereferenceFieldNames())
+                .addAll(oldHiveType.getHiveDereferenceNames(hiveDereferenceIndices))
+                .build();
+
+        return new HiveColumnHandle(
+                oldColumnHandle.getBaseColumnName(),
+                oldColumnHandle.getBaseHiveColumnIndex(),
+                oldColumnHandle.getBaseColumnHiveType(),
+                oldColumnHandle.getBaseColumnType(),
+                hiveDereferenceNames,
+                hiveDereferenceIndices,
+                newHiveType,
+                newHiveType.getType(typeManager),
+                oldColumnHandle.getColumnType(),
+                oldColumnHandle.getComment());
+    }
+
+    @Override
     public Optional<ConnectorPartitioningHandle> getCommonPartitioningHandle(ConnectorSession session, ConnectorPartitioningHandle left, ConnectorPartitioningHandle right)
     {
         HivePartitioningHandle leftHandle = (HivePartitioningHandle) left;
@@ -2202,11 +2297,11 @@ public class HiveMetadata
             else {
                 columnType = REGULAR;
             }
-            columnHandles.add(new HiveColumnHandle(
+            columnHandles.add(createTopLevelHiveColumnHandle(
                     column.getName(),
+                    ordinal,
                     toHiveType(typeTranslator, column.getType()),
                     column.getType(),
-                    ordinal,
                     columnType,
                     Optional.ofNullable(column.getComment())));
             ordinal++;
