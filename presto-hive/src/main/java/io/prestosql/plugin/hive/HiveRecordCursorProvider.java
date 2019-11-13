@@ -14,7 +14,6 @@
 package io.prestosql.plugin.hive;
 
 import io.prestosql.spi.connector.ConnectorSession;
-import io.prestosql.spi.connector.RecordCursor;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.type.TypeManager;
 import org.apache.hadoop.conf.Configuration;
@@ -27,7 +26,7 @@ import java.util.Properties;
 
 public interface HiveRecordCursorProvider
 {
-    Optional<RecordCursor> createRecordCursor(
+    Optional<ReaderRecordCursorWithProjections> createRecordCursor(
             Configuration configuration,
             ConnectorSession session,
             Path path,

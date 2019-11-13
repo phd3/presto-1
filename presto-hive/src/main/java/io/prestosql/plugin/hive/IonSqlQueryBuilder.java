@@ -69,7 +69,7 @@ public class IonSqlQueryBuilder
         }
         else {
             String columnNames = columns.stream()
-                    .map(column -> format("s._%d", column.getHiveColumnIndex() + 1))
+                    .map(column -> format("s._%d", column.getBaseHiveColumnIndex() + 1))
                     .collect(joining(", "));
             sql.append(columnNames);
         }
@@ -94,7 +94,7 @@ public class IonSqlQueryBuilder
             if (tupleDomain.getDomains().isPresent() && isSupported(type)) {
                 Domain domain = tupleDomain.getDomains().get().get(column);
                 if (domain != null) {
-                    builder.add(toPredicate(domain, type, column.getHiveColumnIndex()));
+                    builder.add(toPredicate(domain, type, column.getBaseHiveColumnIndex()));
                 }
             }
         }

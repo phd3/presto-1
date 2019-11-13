@@ -36,6 +36,7 @@ import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
+import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
@@ -59,7 +60,7 @@ public class GenericHiveRecordCursorProvider
     }
 
     @Override
-    public Optional<RecordCursor> createRecordCursor(
+    public Optional<ReaderRecordCursorWithProjections> createRecordCursor(
             Configuration configuration,
             ConnectorSession session,
             Path path,
@@ -83,18 +84,24 @@ public class GenericHiveRecordCursorProvider
             throw new PrestoException(HIVE_FILESYSTEM_ERROR, "Failed getting FileSystem: " + path, e);
         }
 
-        return hdfsEnvironment.doAs(session.getUser(), () -> {
+        Optional<ReaderProjections> projectedReaderColumns = projectBaseColumns(columns);
+
+        RecordCursor cursor = hdfsEnvironment.doAs(session.getUser(), () -> {
             RecordReader<?, ?> recordReader = HiveUtil.createRecordReader(configuration, path, start, length, schema, columns);
 
-            return Optional.of(new GenericHiveRecordCursor<>(
+            return new GenericHiveRecordCursor<>(
                     configuration,
                     path,
                     genericRecordReader(recordReader),
                     length,
                     schema,
-                    columns,
-                    hiveStorageTimeZone));
+                    projectedReaderColumns
+                            .map(ReaderProjections::getReaderColumns)
+                            .orElse(columns),
+                    hiveStorageTimeZone);
         });
+
+        return Optional.of(new ReaderRecordCursorWithProjections(cursor, projectedReaderColumns));
     }
 
     @SuppressWarnings("unchecked")
