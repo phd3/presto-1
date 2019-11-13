@@ -22,6 +22,8 @@ import io.prestosql.plugin.hive.FileFormatDataSourceStats;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HivePageSourceFactory;
+import io.prestosql.plugin.hive.ReaderPageSourceWithProjections;
+import io.prestosql.plugin.hive.ReaderProjections;
 import io.prestosql.rcfile.AircompressorCodecFactory;
 import io.prestosql.rcfile.HadoopCodecFactory;
 import io.prestosql.rcfile.RcFileCorruptionException;
@@ -57,6 +59,7 @@ import static com.google.common.base.Strings.nullToEmpty;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_MISSING_DATA;
+import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
 import static io.prestosql.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.prestosql.rcfile.text.TextRcFileEncoding.DEFAULT_NULL_SEQUENCE;
 import static io.prestosql.rcfile.text.TextRcFileEncoding.DEFAULT_SEPARATORS;
@@ -91,7 +94,7 @@ public class RcFilePageSourceFactory
     }
 
     @Override
-    public Optional<? extends ConnectorPageSource> createPageSource(
+    public Optional<ReaderPageSourceWithProjections> createPageSource(
             Configuration configuration,
             ConnectorSession session,
             Path path,
@@ -119,6 +122,12 @@ public class RcFilePageSourceFactory
             throw new PrestoException(HIVE_BAD_DATA, "RCFile is empty: " + path);
         }
 
+        Optional<ReaderProjections> readerProjections = projectBaseColumns(columns);
+
+        List<HiveColumnHandle> projectedReaderColumns = readerProjections
+                .map(projection -> projection.getReaderColumns())
+                .orElse(columns);
+
         FSDataInputStream inputStream;
         try {
             FileSystem fileSystem = hdfsEnvironment.getFileSystem(session.getUser(), path, configuration);
@@ -134,8 +143,8 @@ public class RcFilePageSourceFactory
 
         try {
             ImmutableMap.Builder<Integer, Type> readColumns = ImmutableMap.builder();
-            for (HiveColumnHandle column : columns) {
-                readColumns.put(column.getHiveColumnIndex(), column.getHiveType().getType(typeManager));
+            for (HiveColumnHandle column : projectedReaderColumns) {
+                readColumns.put(column.getBaseHiveColumnIndex(), column.getHiveType().getType(typeManager));
             }
 
             RcFileReader rcFileReader = new RcFileReader(
@@ -147,7 +156,8 @@ public class RcFilePageSourceFactory
                     length,
                     new DataSize(8, Unit.MEGABYTE));
 
-            return Optional.of(new RcFilePageSource(rcFileReader, columns));
+            ConnectorPageSource rcFilePageSource = new RcFilePageSource(rcFileReader, projectedReaderColumns);
+            return Optional.of(new ReaderPageSourceWithProjections(rcFilePageSource, readerProjections));
         }
         catch (Throwable e) {
             try {
