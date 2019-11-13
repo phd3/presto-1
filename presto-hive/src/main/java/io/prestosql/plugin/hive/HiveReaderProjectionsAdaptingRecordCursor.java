@@ -172,7 +172,7 @@ public class HiveReaderProjectionsAdaptingRecordCursor
         List<Integer> dereferences = channelMappings[field].getDereferenceSequence();
 
         if (dereferences.isEmpty()) {
-            return delegate.getSlice(inputFieldIndex);
+            return delegate.getObject(inputFieldIndex);
         }
 
         Block baseObject = (Block) delegate.getObject(inputFieldIndex);
@@ -193,6 +193,10 @@ public class HiveReaderProjectionsAdaptingRecordCursor
     {
         int inputFieldIndex = channelMappings[field].getInputChannelIndex();
         List<Integer> dereferences = channelMappings[field].getDereferenceSequence();
+
+        if (dereferences.isEmpty()) {
+            return delegate.isNull(inputFieldIndex);
+        }
 
         if (delegate.isNull(inputFieldIndex)) {
             return true;
