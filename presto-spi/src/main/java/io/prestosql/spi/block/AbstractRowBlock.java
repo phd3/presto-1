@@ -174,6 +174,10 @@ public abstract class AbstractRowBlock
         }
         checkReadablePosition(position);
 
+        if (isNull(position)) {
+            return null;
+        }
+
         return clazz.cast(new SingleRowBlock(getFieldBlockOffset(position), getRawFieldBlocks()));
     }
 
