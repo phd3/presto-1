@@ -2083,15 +2083,6 @@ public class TestHiveIntegrationSmokeTest
     }
 
     @Test
-    public void testRows()
-    {
-        assertUpdate("CREATE TABLE tmp_row1 AS SELECT cast(row(CAST(1 as BIGINT), CAST(NULL as BIGINT)) AS row(col0 bigint, col1 bigint)) AS a", 1);
-        assertQuery(
-                "SELECT a.col0, a.col1 FROM tmp_row1",
-                "SELECT 1, cast(null as bigint)");
-    }
-
-    @Test
     public void testComplex()
     {
         assertUpdate("CREATE TABLE tmp_complex1 AS SELECT " +
