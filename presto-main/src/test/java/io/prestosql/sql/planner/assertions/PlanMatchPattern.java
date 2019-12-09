@@ -22,7 +22,10 @@ import io.prestosql.Session;
 import io.prestosql.cost.StatsProvider;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.spi.block.SortOrder;
+import io.prestosql.spi.connector.ColumnHandle;
+import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.predicate.Domain;
+import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.sql.parser.ParsingOptions;
 import io.prestosql.sql.parser.SqlParser;
 import io.prestosql.sql.planner.Symbol;
@@ -138,6 +141,12 @@ public final class PlanMatchPattern
         return result.addColumnReferences(expectedTableName, columnReferences);
     }
 
+    public static PlanMatchPattern tableScanWithProvidedTableAndColumns(ConnectorTableHandle expectedTable, TupleDomain<ColumnHandle> enforcedConstraints, Map<String, ColumnHandle> expectedColumns)
+    {
+        PlanMatchPattern result = ConnectorAwareTableScanMatcher.create(expectedTable, enforcedConstraints);
+        return result.addColumnReferencesWithHandles(expectedColumns);
+    }
+
     public static PlanMatchPattern strictTableScan(String expectedTableName, Map<String, String> columnReferences)
     {
         return tableScan(expectedTableName, columnReferences)
@@ -179,6 +188,13 @@ public final class PlanMatchPattern
     {
         columnReferences.entrySet().forEach(
                 reference -> withAlias(reference.getKey(), columnReference(expectedTableName, reference.getValue())));
+        return this;
+    }
+
+    public PlanMatchPattern addColumnReferencesWithHandles(Map<String, ColumnHandle> expectedColumns)
+    {
+        expectedColumns.entrySet().forEach(
+                column -> withAlias(column.getKey(), new ColumnHandleMatcher(column.getValue())));
         return this;
     }
 
@@ -730,6 +746,11 @@ public final class PlanMatchPattern
     }
 
     public static ExpressionMatcher expression(String expression)
+    {
+        return new ExpressionMatcher(expression);
+    }
+
+    public static ExpressionMatcher expression(Expression expression)
     {
         return new ExpressionMatcher(expression);
     }

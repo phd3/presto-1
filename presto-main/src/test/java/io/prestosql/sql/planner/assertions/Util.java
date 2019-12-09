@@ -31,6 +31,27 @@ final class Util
 {
     private Util() {}
 
+    static boolean domainsMatch(TupleDomain<ColumnHandle> expected, TupleDomain<ColumnHandle> actual)
+    {
+        Optional<Map<ColumnHandle, Domain>> expectedDomains = expected.getDomains();
+        Optional<Map<ColumnHandle, Domain>> actualDomains = actual.getDomains();
+
+        if (expectedDomains.isPresent() != actualDomains.isPresent()) {
+            return false;
+        }
+
+        if (expectedDomains.isPresent()) {
+            if (expectedDomains.get().size() != actualDomains.get().size()) {
+                return false;
+            }
+
+            return expectedDomains.get().entrySet().stream()
+                    .allMatch(expectedDomain -> expectedDomain.getValue().contains(actualDomains.get().get(expectedDomain.getKey())));
+        }
+
+        return true;
+    }
+
     /**
      * @param expectedDomains if empty, the actualConstraint's domains must also be empty.
      */
