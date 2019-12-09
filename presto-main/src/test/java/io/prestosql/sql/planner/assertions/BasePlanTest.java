@@ -19,7 +19,10 @@ import com.google.common.collect.ImmutableSet;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.execution.warnings.WarningCollector;
+import io.prestosql.metadata.QualifiedObjectName;
+import io.prestosql.metadata.TableHandle;
 import io.prestosql.plugin.tpch.TpchConnectorFactory;
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.sql.planner.LogicalPlanner;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.sql.planner.RuleStatsRecorder;
@@ -36,6 +39,7 @@ import org.testng.annotations.BeforeClass;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -50,6 +54,7 @@ public class BasePlanTest
 {
     private final LocalQueryRunnerSupplier queryRunnerSupplier;
     private LocalQueryRunner queryRunner;
+    private MetadataGetter metadataGetter;
 
     public BasePlanTest()
     {
@@ -87,6 +92,13 @@ public class BasePlanTest
     public final void initPlanTest()
     {
         queryRunner = queryRunnerSupplier.get();
+        List<CatalogContext> catalogs = setupCatalogs();
+
+        for (CatalogContext catalogContext : catalogs) {
+            queryRunner.createCatalog(catalogContext.getCatalogName(), catalogContext.getFactory(), catalogContext.getProperties());
+        }
+
+        metadataGetter = new MetadataGetter();
     }
 
     @AfterClass(alwaysRun = true)
@@ -94,6 +106,11 @@ public class BasePlanTest
     {
         closeAllRuntimeException(queryRunner);
         queryRunner = null;
+    }
+
+    protected List<CatalogContext> setupCatalogs()
+    {
+        return ImmutableList.of();
     }
 
     protected CatalogName getCurrentConnectorId()
@@ -104,6 +121,11 @@ public class BasePlanTest
     protected LocalQueryRunner getQueryRunner()
     {
         return queryRunner;
+    }
+
+    protected MetadataGetter metadataGetter()
+    {
+        return metadataGetter;
     }
 
     protected void assertPlan(String sql, PlanMatchPattern pattern)
@@ -230,5 +252,21 @@ public class BasePlanTest
     public interface LocalQueryRunnerSupplier
     {
         LocalQueryRunner get();
+    }
+
+    public class MetadataGetter
+    {
+        public Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName objectName)
+        {
+            return queryRunner.inTransaction(session, transactionSession -> { return queryRunner.getMetadata().getTableHandle(transactionSession, objectName); });
+        }
+
+        public Map<String, ColumnHandle> getColumnHandles(Session session, QualifiedObjectName tableName)
+        {
+            return queryRunner.inTransaction(session, transactionSession -> {
+                Optional<TableHandle> table = queryRunner.getMetadata().getTableHandle(transactionSession, tableName);
+                return queryRunner.getMetadata().getColumnHandles(transactionSession, table.get());
+            });
+        }
     }
 }

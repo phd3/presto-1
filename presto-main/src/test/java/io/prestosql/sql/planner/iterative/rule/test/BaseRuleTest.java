@@ -15,6 +15,7 @@ package io.prestosql.sql.planner.iterative.rule.test;
 
 import com.google.common.collect.ImmutableList;
 import io.prestosql.spi.Plugin;
+import io.prestosql.sql.planner.assertions.CatalogContext;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 
@@ -36,6 +37,15 @@ public abstract class BaseRuleTest
     public final void setUp()
     {
         tester = new RuleTester(plugins);
+        List<CatalogContext> catalogs = setupCatalogs();
+        for (CatalogContext context : catalogs) {
+            tester.getQueryRunner().createCatalog(context.getCatalogName(), context.getFactory(), context.getProperties());
+        }
+    }
+
+    protected List<CatalogContext> setupCatalogs()
+    {
+        return ImmutableList.of();
     }
 
     @AfterClass(alwaysRun = true)

@@ -20,6 +20,7 @@ import io.prestosql.metadata.Metadata;
 import io.prestosql.plugin.tpch.TpchConnectorFactory;
 import io.prestosql.security.AccessControl;
 import io.prestosql.spi.Plugin;
+import io.prestosql.spi.connector.ConnectorFactory;
 import io.prestosql.split.PageSourceManager;
 import io.prestosql.split.SplitManager;
 import io.prestosql.sql.planner.TypeAnalyzer;
@@ -94,6 +95,11 @@ public class RuleTester
         this.typeAnalyzer = new TypeAnalyzer(queryRunner.getSqlParser(), metadata);
     }
 
+    public void createCatalog(String catalogName, ConnectorFactory factory, Map<String, String> properties)
+    {
+        queryRunner.createCatalog(catalogName, factory, properties);
+    }
+
     public RuleAssert assertThat(Rule<?> rule)
     {
         return new RuleAssert(metadata, queryRunner.getStatsCalculator(), queryRunner.getEstimatedExchangesCostCalculator(), session, rule, transactionManager, accessControl);
@@ -133,5 +139,10 @@ public class RuleTester
     public CatalogName getCurrentConnectorId()
     {
         return queryRunner.inTransaction(transactionSession -> metadata.getCatalogHandle(transactionSession, session.getCatalog().get())).get();
+    }
+
+    public LocalQueryRunner getQueryRunner()
+    {
+        return queryRunner;
     }
 }
