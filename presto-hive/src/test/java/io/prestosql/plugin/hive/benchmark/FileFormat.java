@@ -34,7 +34,7 @@ import io.prestosql.plugin.hive.ReaderPageSourceWithProjections;
 import io.prestosql.plugin.hive.ReaderRecordCursorWithProjections;
 import io.prestosql.plugin.hive.RecordFileWriter;
 import io.prestosql.plugin.hive.TypeTranslator;
-import io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormat.TestData;
+import io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormatUtil.TestData;
 import io.prestosql.plugin.hive.orc.OrcPageSourceFactory;
 import io.prestosql.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.prestosql.plugin.hive.parquet.ParquetReaderConfig;
@@ -86,7 +86,21 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HivePageSourceFactory pageSourceFactory = new RcFilePageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats());
-            return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCBINARY);
+            return createPageSourceForBaseColumns(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCBINARY);
+        }
+
+        @Override
+        public Optional<ReaderPageSourceWithProjections> createReaderPageSourceWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumnNames,
+                List<Type> writeColumnTypes)
+        {
+            HivePageSourceFactory pageSourceFactory = new RcFilePageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats());
+            ReaderPageSourceWithProjections delegate = createPageSourceWithProjections(pageSourceFactory, session, targetFile, readColumns, writeColumnNames, writeColumnTypes, HiveStorageFormat.RCBINARY);
+            return Optional.of(delegate);
         }
 
         @Override
@@ -111,7 +125,21 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HivePageSourceFactory pageSourceFactory = new RcFilePageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats());
-            return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCTEXT);
+            return createPageSourceForBaseColumns(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCTEXT);
+        }
+
+        @Override
+        public Optional<ReaderPageSourceWithProjections> createReaderPageSourceWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumnNames,
+                List<Type> writeColumnTypes)
+        {
+            HivePageSourceFactory pageSourceFactory = new RcFilePageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats());
+            ReaderPageSourceWithProjections delegate = createPageSourceWithProjections(pageSourceFactory, session, targetFile, readColumns, writeColumnNames, writeColumnTypes, HiveStorageFormat.RCTEXT);
+            return Optional.of(delegate);
         }
 
         @Override
@@ -136,7 +164,21 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HivePageSourceFactory pageSourceFactory = new OrcPageSourceFactory(false, new OrcReaderOptions(), hdfsEnvironment, new FileFormatDataSourceStats());
-            return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
+            return createPageSourceForBaseColumns(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
+        }
+
+        @Override
+        public Optional<ReaderPageSourceWithProjections> createReaderPageSourceWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumnNames,
+                List<Type> writeColumnTypes)
+        {
+            HivePageSourceFactory pageSourceFactory = new OrcPageSourceFactory(false, new OrcReaderOptions(), hdfsEnvironment, new FileFormatDataSourceStats());
+            ReaderPageSourceWithProjections delegate = createPageSourceWithProjections(pageSourceFactory, session, targetFile, readColumns, writeColumnNames, writeColumnTypes, HiveStorageFormat.ORC);
+            return Optional.of(delegate);
         }
 
         @Override
@@ -162,7 +204,21 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HivePageSourceFactory pageSourceFactory = new ParquetPageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats(), new ParquetReaderConfig());
-            return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.PARQUET);
+            return createPageSourceForBaseColumns(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.PARQUET);
+        }
+
+        @Override
+        public Optional<ReaderPageSourceWithProjections> createReaderPageSourceWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumnNames,
+                List<Type> writeColumnTypes)
+        {
+            HivePageSourceFactory pageSourceFactory = new ParquetPageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats(), new ParquetReaderConfig());
+            ReaderPageSourceWithProjections delegate = createPageSourceWithProjections(pageSourceFactory, session, targetFile, readColumns, writeColumnNames, writeColumnTypes, HiveStorageFormat.PARQUET);
+            return Optional.of(delegate);
         }
 
         @Override
@@ -182,7 +238,20 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
-            return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCBINARY);
+            return createPageSourceForBaseColumns(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCBINARY);
+        }
+
+        @Override
+        public Optional<ReaderRecordCursorWithProjections> createReaderRecordCursorWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumns,
+                List<Type> writeTypes)
+        {
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
+            return Optional.of(createRecordCursorWithProjections(cursorProvider, session, targetFile, readColumns, writeColumns, writeTypes, HiveStorageFormat.RCBINARY));
         }
 
         @Override
@@ -202,7 +271,20 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
-            return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCTEXT);
+            return createPageSourceForBaseColumns(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.RCTEXT);
+        }
+
+        @Override
+        public Optional<ReaderRecordCursorWithProjections> createReaderRecordCursorWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumns,
+                List<Type> writeTypes)
+        {
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
+            return Optional.of(createRecordCursorWithProjections(cursorProvider, session, targetFile, readColumns, writeColumns, writeTypes, HiveStorageFormat.RCTEXT));
         }
 
         @Override
@@ -222,7 +304,20 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
-            return createPageSource(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
+            return createPageSourceForBaseColumns(cursorProvider, session, targetFile, columnNames, columnTypes, HiveStorageFormat.ORC);
+        }
+
+        @Override
+        public Optional<ReaderRecordCursorWithProjections> createReaderRecordCursorWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumns,
+                List<Type> writeTypes)
+        {
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
+            return Optional.of(createRecordCursorWithProjections(cursorProvider, session, targetFile, readColumns, writeColumns, writeTypes, HiveStorageFormat.ORC));
         }
 
         @Override
@@ -242,7 +337,20 @@ public enum FileFormat
         public ConnectorPageSource createFileFormatReader(ConnectorSession session, HdfsEnvironment hdfsEnvironment, File targetFile, List<String> columnNames, List<Type> columnTypes)
         {
             HivePageSourceFactory pageSourceFactory = new ParquetPageSourceFactory(TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats(), new ParquetReaderConfig());
-            return createPageSource(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.PARQUET);
+            return createPageSourceForBaseColumns(pageSourceFactory, session, targetFile, columnNames, columnTypes, HiveStorageFormat.PARQUET);
+        }
+
+        @Override
+        public Optional<ReaderRecordCursorWithProjections> createReaderRecordCursorWithProjections(
+                ConnectorSession session,
+                HdfsEnvironment hdfsEnvironment,
+                File targetFile,
+                List<HiveColumnHandle> readColumns,
+                List<String> writeColumns,
+                List<Type> writeTypes)
+        {
+            HiveRecordCursorProvider cursorProvider = createGenericHiveRecordCursorProvider(hdfsEnvironment);
+            return Optional.of(createRecordCursorWithProjections(cursorProvider, session, targetFile, readColumns, writeColumns, writeTypes, HiveStorageFormat.PARQUET));
         }
 
         @Override
@@ -277,6 +385,28 @@ public enum FileFormat
             HiveCompressionCodec compressionCodec)
             throws IOException;
 
+    public Optional<ReaderPageSourceWithProjections> createReaderPageSourceWithProjections(
+            ConnectorSession session,
+            HdfsEnvironment hdfsEnvironment,
+            File targetFile,
+            List<HiveColumnHandle> readColumns,
+            List<String> writeColumns,
+            List<Type> writeTypes)
+    {
+        return Optional.empty();
+    }
+
+    public Optional<ReaderRecordCursorWithProjections> createReaderRecordCursorWithProjections(
+            ConnectorSession session,
+            HdfsEnvironment hdfsEnvironment,
+            File targetFile,
+            List<HiveColumnHandle> readColumns,
+            List<String> writeColumns,
+            List<Type> writeTypes)
+    {
+        return Optional.empty();
+    }
+
     private static final JobConf conf;
 
     static {
@@ -289,9 +419,13 @@ public enum FileFormat
         return true;
     }
 
-    private static ConnectorPageSource createPageSource(
+    private static ConnectorPageSource createPageSourceForBaseColumns(
             HiveRecordCursorProvider cursorProvider,
-            ConnectorSession session, File targetFile, List<String> columnNames, List<Type> columnTypes, HiveStorageFormat format)
+            ConnectorSession session,
+            File targetFile,
+            List<String> columnNames,
+            List<Type> columnTypes,
+            HiveStorageFormat format)
     {
         List<HiveColumnHandle> columnHandles = new ArrayList<>(columnNames.size());
         TypeTranslator typeTranslator = new HiveTypeTranslator();
@@ -301,28 +435,40 @@ public enum FileFormat
             columnHandles.add(createBaseColumn(columnName, i, toHiveType(typeTranslator, columnType), columnType, REGULAR, Optional.empty()));
         }
 
-        Optional<ReaderRecordCursorWithProjections> recordCursorWithProjections = cursorProvider
-                .createRecordCursor(
-                        conf,
-                        session,
-                        new Path(targetFile.getAbsolutePath()),
-                        0,
-                        targetFile.length(),
-                        targetFile.length(),
-                        createSchema(format, columnNames, columnTypes),
-                        columnHandles,
-                        TupleDomain.all(),
-                        DateTimeZone.forID(session.getTimeZoneKey().getId()),
-                        TYPE_MANAGER,
-                        false);
+        ReaderRecordCursorWithProjections recordCursorWithProjections = createRecordCursorWithProjections(cursorProvider, session, targetFile, columnHandles, columnNames, columnTypes, format);
 
-        checkState(recordCursorWithProjections.isPresent(), "recordCursorWithProjections is not present");
-        checkState(!recordCursorWithProjections.get().getProjectedReaderColumns().isPresent(), "projections should not be required");
+        checkState(!recordCursorWithProjections.getProjectedReaderColumns().isPresent(), "projections should not be required for base columns");
 
-        return new RecordPageSource(columnTypes, recordCursorWithProjections.get().getRecordCursor());
+        return new RecordPageSource(columnTypes, recordCursorWithProjections.getRecordCursor());
     }
 
-    private static ConnectorPageSource createPageSource(
+    private static ReaderRecordCursorWithProjections createRecordCursorWithProjections(
+            HiveRecordCursorProvider cursorProvider,
+            ConnectorSession session,
+            File targetFile,
+            List<HiveColumnHandle> readColumns,
+            List<String> writeColumnNames,
+            List<Type> writeColumnTypes,
+            HiveStorageFormat format)
+    {
+        Optional<ReaderRecordCursorWithProjections> recordCursorWithProjections = cursorProvider.createRecordCursor(
+                conf,
+                session,
+                new Path(targetFile.getAbsolutePath()),
+                0,
+                targetFile.length(),
+                targetFile.length(),
+                createSchema(format, writeColumnNames, writeColumnTypes),
+                readColumns,
+                TupleDomain.all(),
+                DateTimeZone.forID(session.getTimeZoneKey().getId()),
+                TYPE_MANAGER,
+                false);
+
+        return recordCursorWithProjections.get();
+    }
+
+    private static ConnectorPageSource createPageSourceForBaseColumns(
             HivePageSourceFactory pageSourceFactory,
             ConnectorSession session,
             File targetFile,
@@ -338,6 +484,23 @@ public enum FileFormat
             columnHandles.add(createBaseColumn(columnName, i, toHiveType(typeTranslator, columnType), columnType, REGULAR, Optional.empty()));
         }
 
+        ReaderPageSourceWithProjections readerPageSourceWithProjections = createPageSourceWithProjections(pageSourceFactory, session, targetFile, columnHandles, columnNames, columnTypes, format);
+
+        checkState(!readerPageSourceWithProjections.getProjectedReaderColumns().isPresent(), "projection should not be required for base columns");
+
+        return readerPageSourceWithProjections.getConnectorPageSource();
+    }
+
+    private static ReaderPageSourceWithProjections createPageSourceWithProjections(
+            HivePageSourceFactory pageSourceFactory,
+            ConnectorSession session,
+            File targetFile,
+            List<HiveColumnHandle> readColumns,
+            List<String> writeColumnNames,
+            List<Type> writeColumnTypes,
+            HiveStorageFormat format)
+    {
+        Properties schema = createSchema(format, writeColumnNames, writeColumnTypes);
         Optional<ReaderPageSourceWithProjections> readerPageSourceWithProjections = pageSourceFactory
                 .createPageSource(
                         conf,
@@ -346,15 +509,12 @@ public enum FileFormat
                         0,
                         targetFile.length(),
                         targetFile.length(),
-                        createSchema(format, columnNames, columnTypes),
-                        columnHandles,
+                        schema,
+                        readColumns,
                         TupleDomain.all(),
                         DateTimeZone.forID(session.getTimeZoneKey().getId()));
 
-        checkState(readerPageSourceWithProjections.isPresent(), "readerPageSourceWithProjections is not present");
-        checkState(!readerPageSourceWithProjections.get().getProjectedReaderColumns().isPresent(), "projection should not be required");
-
-        return readerPageSourceWithProjections.get().getConnectorPageSource();
+        return readerPageSourceWithProjections.get();
     }
 
     private static class RecordFormatWriter
@@ -399,7 +559,7 @@ public enum FileFormat
         }
     }
 
-    private static Properties createSchema(HiveStorageFormat format, List<String> columnNames, List<Type> columnTypes)
+    public static Properties createSchema(HiveStorageFormat format, List<String> columnNames, List<Type> columnTypes)
     {
         Properties schema = new Properties();
         TypeTranslator typeTranslator = new HiveTypeTranslator();

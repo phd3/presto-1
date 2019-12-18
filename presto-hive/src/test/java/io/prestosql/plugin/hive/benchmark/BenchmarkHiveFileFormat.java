@@ -19,9 +19,8 @@ import io.airlift.tpch.OrderColumn;
 import io.airlift.tpch.TpchColumn;
 import io.airlift.tpch.TpchEntity;
 import io.airlift.tpch.TpchTable;
-import io.airlift.units.DataSize;
-import io.prestosql.hadoop.HadoopNative;
 import io.prestosql.plugin.hive.HiveCompressionCodec;
+import io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormatUtil.TestData;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
 import io.prestosql.spi.block.BlockBuilder;
@@ -60,10 +59,10 @@ import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.airlift.tpch.TpchTable.LINE_ITEM;
 import static io.airlift.tpch.TpchTable.ORDERS;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.prestosql.plugin.hive.HiveTestUtils.SESSION;
 import static io.prestosql.plugin.hive.HiveTestUtils.mapType;
+import static io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormatUtil.MIN_DATA_SIZE;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.DateType.DATE;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
@@ -81,12 +80,6 @@ import static java.util.stream.Collectors.toList;
 @SuppressWarnings("UseOfSystemOutOrSystemErr")
 public class BenchmarkHiveFileFormat
 {
-    private static final long MIN_DATA_SIZE = new DataSize(50, MEGABYTE).toBytes();
-
-    static {
-        HadoopNative.requireHadoopNative();
-    }
-
     @Param({
             "LINEITEM",
             "BIGINT_SEQUENTIAL",
@@ -502,44 +495,6 @@ public class BenchmarkHiveFileFormat
             }
         }
         return new TestData(columnNames, columnTypes, pages.build());
-    }
-
-    static class TestData
-    {
-        private final List<String> columnNames;
-        private final List<Type> columnTypes;
-
-        private final List<Page> pages;
-
-        private final int size;
-
-        public TestData(List<String> columnNames, List<Type> columnTypes, List<Page> pages)
-        {
-            this.columnNames = ImmutableList.copyOf(columnNames);
-            this.columnTypes = ImmutableList.copyOf(columnTypes);
-            this.pages = ImmutableList.copyOf(pages);
-            this.size = (int) pages.stream().mapToLong(Page::getSizeInBytes).sum();
-        }
-
-        public List<String> getColumnNames()
-        {
-            return columnNames;
-        }
-
-        public List<Type> getColumnTypes()
-        {
-            return columnTypes;
-        }
-
-        public List<Page> getPages()
-        {
-            return pages;
-        }
-
-        public int getSize()
-        {
-            return size;
-        }
     }
 
     private static Type getColumnType(TpchColumn<?> input)
