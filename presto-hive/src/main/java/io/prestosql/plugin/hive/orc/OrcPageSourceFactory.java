@@ -27,6 +27,7 @@ import io.prestosql.orc.TupleDomainOrcPredicate.TupleDomainOrcPredicateBuilder;
 import io.prestosql.plugin.hive.FileFormatDataSourceStats;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HiveColumnHandle;
+import io.prestosql.plugin.hive.HiveColumnProjectionInfo;
 import io.prestosql.plugin.hive.HivePageSourceFactory;
 import io.prestosql.plugin.hive.ReaderPageSourceWithProjections;
 import io.prestosql.plugin.hive.ReaderProjections;
@@ -76,7 +77,7 @@ import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcBloomFiltersEn
 import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcNestedLazy;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isUseOrcColumnNames;
 import static io.prestosql.plugin.hive.ReaderPageSourceWithProjections.noProjectionAdaptation;
-import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
+import static io.prestosql.plugin.hive.ReaderProjections.projectSufficientColumns;
 import static io.prestosql.plugin.hive.orc.OrcPageSource.handleException;
 import static io.prestosql.plugin.hive.util.HiveUtil.isDeserializerClass;
 import static java.lang.String.format;
@@ -130,8 +131,7 @@ public class OrcPageSourceFactory
             return Optional.of(context);
         }
 
-        Optional<ReaderProjections> projectedReaderColumns = projectBaseColumns(columns);
-        effectivePredicate = effectivePredicate.transform(column -> column.isBaseColumn() ? column : null);
+        Optional<ReaderProjections> projectedReaderColumns = projectSufficientColumns(columns);
 
         ConnectorPageSource orcPageSource = createOrcPageSource(
                 hdfsEnvironment,
@@ -208,39 +208,51 @@ public class OrcPageSourceFactory
                 verifyFileHasColumnNames(reader.getColumnNames(), path);
             }
 
-            List<OrcColumn> fileColumns = reader.getRootColumn().getNestedColumns();
-            Map<String, OrcColumn> fileColumnsByName = ImmutableMap.of();
+            List<OrcColumn> baseFileColumns = reader.getRootColumn().getNestedColumns();
+            Map<String, OrcColumn> baseFileColumnsByName = ImmutableMap.of();
             if (useOrcColumnNames) {
                 // Convert column names read from ORC files to lower case to be consistent with those stored in Hive Metastore
-                fileColumnsByName = uniqueIndex(fileColumns, orcColumn -> orcColumn.getColumnName().toLowerCase(ENGLISH));
+                baseFileColumnsByName = uniqueIndex(baseFileColumns, orcColumn -> orcColumn.getColumnName().toLowerCase(ENGLISH));
             }
 
+            List<OrcColumn> fileReadColumns = new ArrayList<>(columns.size());
+            List<Type> fileReadTypes = new ArrayList<>(columns.size());
+            List<ColumnAdaptation> columnAdaptations = new ArrayList<>(columns.size());
+
+            effectivePredicate = effectivePredicate.transform(hiveColumnHandle -> hiveColumnHandle.getColumnType() == REGULAR ? hiveColumnHandle : null);
             TupleDomainOrcPredicateBuilder predicateBuilder = TupleDomainOrcPredicate.builder()
                     .setBloomFiltersEnabled(options.isBloomFiltersEnabled());
             Map<HiveColumnHandle, Domain> effectivePredicateDomains = effectivePredicate.getDomains()
                     .orElseThrow(() -> new IllegalArgumentException("Effective predicate is none"));
-            List<OrcColumn> fileReadColumns = new ArrayList<>(columns.size());
-            List<Type> fileReadTypes = new ArrayList<>(columns.size());
-            List<ColumnAdaptation> columnAdaptations = new ArrayList<>(columns.size());
+
+            // Build column adaptations and predicates
             for (HiveColumnHandle column : columns) {
-                OrcColumn orcColumn = null;
+                // Get base orc column
+                OrcColumn baseOrcColumn = null;
                 if (useOrcColumnNames) {
-                    orcColumn = fileColumnsByName.get(column.getName().toLowerCase(ENGLISH));
+                    baseOrcColumn = baseFileColumnsByName.get(column.getBaseColumnName().toLowerCase(ENGLISH));
                 }
-                else if (column.getBaseHiveColumnIndex() < fileColumns.size()) {
-                    orcColumn = fileColumns.get(column.getBaseHiveColumnIndex());
+                else if (column.getBaseHiveColumnIndex() < baseFileColumns.size()) {
+                    baseOrcColumn = baseFileColumns.get(column.getBaseHiveColumnIndex());
+                }
+
+                // Get nested orc column and add it to column adaptations
+                OrcColumn nestedOrcColumn = null;
+                if (baseOrcColumn != null) {
+                    nestedOrcColumn = getNestedOrcColumn(baseOrcColumn, column.getHiveColumnProjectionInfo());
                 }
 
                 Type readType = column.getType();
-                if (orcColumn != null) {
+                if (nestedOrcColumn != null) {
                     int sourceIndex = fileReadColumns.size();
                     columnAdaptations.add(ColumnAdaptation.sourceColumn(sourceIndex));
-                    fileReadColumns.add(orcColumn);
+                    fileReadColumns.add(nestedOrcColumn);
                     fileReadTypes.add(readType);
 
+                    // Add predicate
                     Domain domain = effectivePredicateDomains.get(column);
                     if (domain != null) {
-                        predicateBuilder.addColumn(orcColumn.getColumnId(), domain);
+                        predicateBuilder.addColumn(nestedOrcColumn.getColumnId(), domain);
                     }
                 }
                 else {
@@ -281,6 +293,28 @@ public class OrcPageSourceFactory
             }
             throw new PrestoException(HIVE_CANNOT_OPEN_SPLIT, message, e);
         }
+    }
+
+    private static OrcColumn getNestedOrcColumn(OrcColumn baseOrcColumn, Optional<HiveColumnProjectionInfo> partialColumnInfo)
+    {
+        if (!partialColumnInfo.isPresent()) {
+            return baseOrcColumn;
+        }
+
+        OrcColumn current = baseOrcColumn;
+        for (String field : partialColumnInfo.get().getDereferenceNames()) {
+            Optional<OrcColumn> orcColumn = current.getNestedColumns().stream()
+                    .filter(column -> column.getColumnName().toLowerCase(ENGLISH).equals(field))
+                    .findFirst();
+
+            if (!orcColumn.isPresent()) {
+                return null;
+            }
+
+            current = orcColumn.get();
+        }
+
+        return current;
     }
 
     private static String splitError(Throwable t, Path path, long start, long length)
