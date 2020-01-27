@@ -180,7 +180,7 @@ public class HiveReaderProjectionsAdaptingRecordCursor
         List<Integer> dereferences = channelMappings[field].getDereferenceSequence();
 
         if (dereferences.isEmpty()) {
-            return delegate.getSlice(inputFieldIndex);
+            return delegate.getObject(inputFieldIndex);
         }
 
         // Get SingleRowBlock corresponding to the element at current position
@@ -197,6 +197,10 @@ public class HiveReaderProjectionsAdaptingRecordCursor
     {
         int inputFieldIndex = channelMappings[field].getInputChannelIndex();
         List<Integer> dereferences = channelMappings[field].getDereferenceSequence();
+
+        if (dereferences.isEmpty()) {
+            return delegate.isNull(inputFieldIndex);
+        }
 
         if (delegate.isNull(inputFieldIndex)) {
             return true;
