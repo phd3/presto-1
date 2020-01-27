@@ -46,7 +46,10 @@ public class ParquetPageSource
     private int batchId;
     private boolean closed;
 
-    public ParquetPageSource(ParquetReader parquetReader, List<Type> types, List<Optional<Field>> fields)
+    public ParquetPageSource(
+            ParquetReader parquetReader,
+            List<Type> types,
+            List<Optional<Field>> fields)
     {
         this.parquetReader = requireNonNull(parquetReader, "parquetReader is null");
         this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
@@ -99,6 +102,7 @@ public class ParquetPageSource
                     blocks[fieldId] = RunLengthEncodedBlock.create(types.get(fieldId), null, batchSize);
                 }
             }
+
             return new Page(batchSize, blocks);
         }
         catch (PrestoException e) {

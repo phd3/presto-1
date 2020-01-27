@@ -13,7 +13,6 @@
  */
 package io.prestosql.plugin.hive;
 
-import io.prestosql.spi.connector.ConnectorPageSource;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.predicate.TupleDomain;
 import org.apache.hadoop.conf.Configuration;
@@ -26,7 +25,7 @@ import java.util.Properties;
 
 public interface HivePageSourceFactory
 {
-    Optional<? extends ConnectorPageSource> createPageSource(
+    Optional<ReaderPageSourceWithProjections> createPageSource(
             Configuration configuration,
             ConnectorSession session,
             Path path,

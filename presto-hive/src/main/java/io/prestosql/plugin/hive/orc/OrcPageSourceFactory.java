@@ -28,6 +28,8 @@ import io.prestosql.plugin.hive.FileFormatDataSourceStats;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HivePageSourceFactory;
+import io.prestosql.plugin.hive.ReaderPageSourceWithProjections;
+import io.prestosql.plugin.hive.ReaderProjections;
 import io.prestosql.plugin.hive.orc.OrcPageSource.ColumnAdaptation;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorPageSource;
@@ -73,6 +75,8 @@ import static io.prestosql.plugin.hive.HiveSessionProperties.getOrcTinyStripeThr
 import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcBloomFiltersEnabled;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcNestedLazy;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isUseOrcColumnNames;
+import static io.prestosql.plugin.hive.ReaderPageSourceWithProjections.noProjectionAdaptation;
+import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
 import static io.prestosql.plugin.hive.orc.OrcPageSource.handleException;
 import static io.prestosql.plugin.hive.util.HiveUtil.isDeserializerClass;
 import static java.lang.String.format;
@@ -104,7 +108,7 @@ public class OrcPageSourceFactory
     }
 
     @Override
-    public Optional<? extends ConnectorPageSource> createPageSource(
+    public Optional<ReaderPageSourceWithProjections> createPageSource(
             Configuration configuration,
             ConnectorSession session,
             Path path,
@@ -122,10 +126,14 @@ public class OrcPageSourceFactory
 
         // per HIVE-13040 and ORC-162, empty files are allowed
         if (fileSize == 0) {
-            return Optional.of(new FixedPageSource(ImmutableList.of()));
+            ReaderPageSourceWithProjections context = noProjectionAdaptation(new FixedPageSource(ImmutableList.of()));
+            return Optional.of(context);
         }
 
-        return Optional.of(createOrcPageSource(
+        Optional<ReaderProjections> projectedReaderColumns = projectBaseColumns(columns);
+        effectivePredicate = effectivePredicate.transform(column -> column.isBaseColumn() ? column : null);
+
+        ConnectorPageSource orcPageSource = createOrcPageSource(
                 hdfsEnvironment,
                 session.getUser(),
                 configuration,
@@ -133,7 +141,9 @@ public class OrcPageSourceFactory
                 start,
                 length,
                 fileSize,
-                columns,
+                projectedReaderColumns
+                        .map(projection -> projection.getReaderColumns())
+                        .orElse(columns),
                 isUseOrcColumnNames(session),
                 effectivePredicate,
                 hiveStorageTimeZone,
@@ -146,7 +156,9 @@ public class OrcPageSourceFactory
                         .withLazyReadSmallRanges(getOrcLazyReadSmallRanges(session))
                         .withNestedLazy(isOrcNestedLazy(session))
                         .withBloomFiltersEnabled(isOrcBloomFiltersEnabled(session)),
-                stats));
+                stats);
+
+        return Optional.of(new ReaderPageSourceWithProjections(orcPageSource, projectedReaderColumns));
     }
 
     private static OrcPageSource createOrcPageSource(
@@ -215,8 +227,8 @@ public class OrcPageSourceFactory
                 if (useOrcColumnNames) {
                     orcColumn = fileColumnsByName.get(column.getName().toLowerCase(ENGLISH));
                 }
-                else if (column.getHiveColumnIndex() < fileColumns.size()) {
-                    orcColumn = fileColumns.get(column.getHiveColumnIndex());
+                else if (column.getBaseHiveColumnIndex() < fileColumns.size()) {
+                    orcColumn = fileColumns.get(column.getBaseHiveColumnIndex());
                 }
 
                 Type readType = column.getType();
