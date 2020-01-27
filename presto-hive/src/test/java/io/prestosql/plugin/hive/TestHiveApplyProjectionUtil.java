@@ -31,7 +31,7 @@ import static org.testng.Assert.assertTrue;
 
 public class TestHiveApplyProjectionUtil
 {
-    private static final ConnectorExpression ROW_OF_ROW_VARIABLE = new Variable("a", rowType(field("a", rowType(field("c", INTEGER)))));
+    private static final ConnectorExpression ROW_OF_ROW_VARIABLE = new Variable("a", rowType(field("b", rowType(field("c", INTEGER)))));
 
     private static final ConnectorExpression ONE_LEVEL_DEREFERENCE = new FieldDereference(
             rowType(field("c", INTEGER)),
@@ -61,5 +61,6 @@ public class TestHiveApplyProjectionUtil
         assertEquals(extractSupportedProjectedColumns(ONE_LEVEL_DEREFERENCE), ImmutableList.of(ONE_LEVEL_DEREFERENCE));
         assertEquals(extractSupportedProjectedColumns(TWO_LEVEL_DEREFERENCE), ImmutableList.of(TWO_LEVEL_DEREFERENCE));
         assertEquals(extractSupportedProjectedColumns(INT_VARIABLE), ImmutableList.of(INT_VARIABLE));
+        assertEquals(extractSupportedProjectedColumns(CONSTANT), ImmutableList.of());
     }
 }

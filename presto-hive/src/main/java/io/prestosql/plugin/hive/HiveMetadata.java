@@ -1868,10 +1868,14 @@ public class HiveMetadata
     }
 
     @Override
-    public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session, ConnectorTableHandle handle, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(
+            ConnectorSession session,
+            ConnectorTableHandle handle,
+            List<ConnectorExpression> projections,
+            Map<String, ColumnHandle> assignments)
     {
         // Create projected column representations for supported sub expressions. Simple column references and chain of
-        // dereferences are supported right now.
+        // dereferences on a variable are supported right now.
         Set<ConnectorExpression> projectedExpressions = projections.stream()
                 .flatMap(expression -> extractSupportedProjectedColumns(expression).stream())
                 .collect(toImmutableSet());
@@ -1929,18 +1933,23 @@ public class HiveMetadata
         HiveType oldHiveType = column.getHiveType();
         HiveType newHiveType = oldHiveType.getHiveTypeForDereferences(indices).get();
 
-        HiveColumnProjectionInfo columnProjectionInfo;
-
-        if (column.getHiveColumnProjectionInfo().isPresent()) {
-            columnProjectionInfo = attachDereferences(column.getHiveColumnProjectionInfo().get(), indices);
-        }
-        else {
-            columnProjectionInfo = new HiveColumnProjectionInfo(
-                    indices,
-                    oldHiveType.getHiveDereferenceNames(indices),
-                    newHiveType,
-                    newHiveType.getType(typeManager));
-        }
+        HiveColumnProjectionInfo columnProjectionInfo = new HiveColumnProjectionInfo(
+                // Merge indices
+                ImmutableList.<Integer>builder()
+                    .addAll(column.getHiveColumnProjectionInfo()
+                        .map(HiveColumnProjectionInfo::getDereferenceIndices)
+                        .orElse(ImmutableList.of()))
+                    .addAll(indices)
+                    .build(),
+                // Merge names
+                ImmutableList.<String>builder()
+                    .addAll(column.getHiveColumnProjectionInfo()
+                        .map(HiveColumnProjectionInfo::getDereferenceNames)
+                        .orElse(ImmutableList.of()))
+                    .addAll(oldHiveType.getHiveDereferenceNames(indices))
+                    .build(),
+                newHiveType,
+                newHiveType.getType(typeManager));
 
         return new HiveColumnHandle(
                 column.getBaseColumnName(),
@@ -1950,23 +1959,6 @@ public class HiveMetadata
                 Optional.of(columnProjectionInfo),
                 column.getColumnType(),
                 column.getComment());
-    }
-
-    private HiveColumnProjectionInfo attachDereferences(HiveColumnProjectionInfo columnProjectionInfo, List<Integer> indices)
-    {
-        List<Integer> newIndices = ImmutableList.<Integer>builder()
-                .addAll(columnProjectionInfo.getDereferenceIndices())
-                .addAll(indices)
-                .build();
-
-        List<String> newNames = ImmutableList.<String>builder()
-                .addAll(columnProjectionInfo.getDereferenceNames())
-                .addAll(columnProjectionInfo.getHiveType().getHiveDereferenceNames(indices))
-                .build();
-
-        HiveType newHiveType = columnProjectionInfo.getHiveType().getHiveTypeForDereferences(indices).get();
-
-        return new HiveColumnProjectionInfo(newIndices, newNames, newHiveType, newHiveType.getType(typeManager));
     }
 
     @Override
