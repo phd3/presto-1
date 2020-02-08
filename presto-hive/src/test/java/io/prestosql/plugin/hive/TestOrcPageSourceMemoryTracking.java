@@ -463,7 +463,7 @@ public class TestOrcPageSourceMemoryTracking
             columns = columnsBuilder.build();
             types = typesBuilder.build();
 
-            fileSplit = createTestFile(tempFilePath, new OrcOutputFormat(), serde, null, testColumns, numRows, stripeRows);
+            fileSplit = createTestFile(tempFilePath, serde, null, testColumns, numRows, stripeRows);
         }
 
         public ConnectorPageSource newPageSource()
@@ -554,7 +554,6 @@ public class TestOrcPageSourceMemoryTracking
 
     public static FileSplit createTestFile(
             String filePath,
-            HiveOutputFormat<?, ?> outputFormat,
             Serializer serializer,
             String compressionCodec,
             List<TestColumn> testColumns,
