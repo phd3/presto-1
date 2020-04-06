@@ -20,6 +20,7 @@ import io.prestosql.orc.OrcDataSource;
 import io.prestosql.orc.OrcDataSourceId;
 import io.prestosql.orc.OrcRecordReader;
 import io.prestosql.plugin.hive.FileFormatDataSourceStats;
+import io.prestosql.plugin.hive.ReaderProjectionsAdapter;
 import io.prestosql.plugin.hive.orc.OrcDeletedRows.MaskDeletedRowsFunction;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PrestoException;
@@ -32,6 +33,7 @@ import io.prestosql.spi.type.Type;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -190,6 +192,11 @@ public class OrcPageSource
         {
             return new SourceColumn(index);
         }
+
+        static ColumnAdaptation sourceColumn(int index, int unwrapStructs, Type type)
+        {
+            return new SourceColumn(index, unwrapStructs, type);
+        }
     }
 
     private static class NullColumn
@@ -225,17 +232,32 @@ public class OrcPageSource
             implements ColumnAdaptation
     {
         private final int index;
+        private final int unwrapStructs;
+        private final Type type;
 
         public SourceColumn(int index)
         {
+            this(index, 0, null);
+        }
+
+        public SourceColumn(int index, int unwrapStructs, Type type)
+        {
             checkArgument(index >= 0, "index is negative");
+            checkArgument(unwrapStructs >= 0, "index is negative");
             this.index = index;
+            this.unwrapStructs = unwrapStructs;
+            this.type = type;
         }
 
         @Override
         public Block block(Page sourcePage, MaskDeletedRowsFunction maskDeletedRowsFunction)
         {
             Block block = sourcePage.getBlock(index);
+
+            if (unwrapStructs > 0) {
+                block = new LazyBlock(block.getPositionCount(), new ReaderProjectionsAdapter.DereferenceBlockLoader(block, Collections.nCopies(unwrapStructs, 0), type));
+            }
+
             return new LazyBlock(maskDeletedRowsFunction.getPositionCount(), new MaskingBlockLoader(maskDeletedRowsFunction, block));
         }
 
@@ -244,6 +266,7 @@ public class OrcPageSource
         {
             return toStringHelper(this)
                     .add("index", index)
+                    .add("unwrapStructs", unwrapStructs)
                     .toString();
         }
 

@@ -40,6 +40,7 @@ import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.FixedPageSource;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.TupleDomain;
+import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.Type;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -83,6 +84,7 @@ import static io.prestosql.plugin.hive.HiveSessionProperties.getOrcTinyStripeThr
 import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcBloomFiltersEnabled;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isOrcNestedLazy;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isUseOrcColumnNames;
+import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
 import static io.prestosql.plugin.hive.ReaderProjections.projectSufficientColumns;
 import static io.prestosql.plugin.hive.orc.OrcPageSource.handleException;
 import static io.prestosql.plugin.hive.util.HiveUtil.isDeserializerClass;
@@ -270,15 +272,22 @@ public class OrcPageSourceFactory
 
                 // Get nested orc column and add it to column adaptations
                 OrcColumn nestedOrcColumn = null;
+                OrcColumn baseOrcColumnWithProjectedFields = null;
+                Type readType = column.getType();
                 if (baseOrcColumn != null) {
                     nestedOrcColumn = getNestedOrcColumn(baseOrcColumn, column.getHiveColumnProjectionInfo());
                 }
 
-                Type readType = column.getType();
                 if (nestedOrcColumn != null) {
+                    // modify read type
+                    baseOrcColumnWithProjectedFields = retainProjectedFields(baseOrcColumn, column.getHiveColumnProjectionInfo().map(HiveColumnProjectionInfo::getDereferenceNames).orElse(ImmutableList.of()));
+                    List<String> dereferenceFields = column.getHiveColumnProjectionInfo().map(HiveColumnProjectionInfo::getDereferenceNames).orElse(ImmutableList.of());
+                    // TODO: change this to incorporate stuff
+                    readType = getReadTypeWithRetainFields(column.getBaseType(), dereferenceFields);
+
                     int sourceIndex = fileReadColumns.size();
-                    columnAdaptations.add(ColumnAdaptation.sourceColumn(sourceIndex));
-                    fileReadColumns.add(nestedOrcColumn);
+                    columnAdaptations.add(ColumnAdaptation.sourceColumn(sourceIndex, dereferenceFields.size(), column.getType()));
+                    fileReadColumns.add(baseOrcColumnWithProjectedFields);
                     fileReadTypes.add(readType);
 
                     // Add predicate
@@ -335,6 +344,56 @@ public class OrcPageSourceFactory
             }
             throw new PrestoException(HIVE_CANNOT_OPEN_SPLIT, message, e);
         }
+    }
+
+    private static Type getReadTypeWithRetainFields(Type baseType, List<String> fieldNames)
+    {
+        if (fieldNames.size() == 0) {
+            return baseType;
+        }
+
+        String name = fieldNames.get(0);
+        checkArgument(baseType instanceof RowType);
+
+        Type fieldType = ((RowType) baseType).getFields().stream()
+                .filter(field -> field.getName().get().equals(name))
+                .map(RowType.Field::getType)
+                .findFirst()
+                .get();
+
+        return RowType.from(
+                ImmutableList.of(
+                        new RowType.Field(
+                                Optional.of(name),
+                                getReadTypeWithRetainFields(fieldType, fieldNames.subList(1, fieldNames.size())))));
+    }
+
+    private static OrcColumn retainProjectedFields(OrcColumn baseOrcColumn, List<String> fieldNames)
+    {
+        requireNonNull(fieldNames, "fieldNames is null");
+        requireNonNull(baseOrcColumn, "baseOrcColumn is null");
+
+        if (fieldNames.size() == 0) {
+            return baseOrcColumn;
+        }
+
+        String field = fieldNames.get(0);
+        Optional<OrcColumn> orcColumn = baseOrcColumn.getNestedColumns().stream()
+                .filter(column -> column.getColumnName().toLowerCase(ENGLISH).equals(field))
+                .findFirst();
+
+        checkArgument(orcColumn.isPresent());
+
+        OrcColumn modifiedColumn = retainProjectedFields(orcColumn.get(), fieldNames.subList(1, fieldNames.size()));
+
+        return new OrcColumn(
+                baseOrcColumn.getPath(),
+                baseOrcColumn.getColumnId(),
+                baseOrcColumn.getColumnName(),
+                baseOrcColumn.getColumnType(),
+                baseOrcColumn.getOrcDataSourceId(),
+                ImmutableList.of(modifiedColumn),
+                baseOrcColumn.getAttributes());
     }
 
     private static OrcColumn getNestedOrcColumn(OrcColumn baseOrcColumn, Optional<HiveColumnProjectionInfo> partialColumnInfo)
