@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
+import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
@@ -29,6 +30,7 @@ import io.prestosql.sql.tree.DereferenceExpression;
 
 import java.util.Map;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.createProjectNodeIfRequired;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.getBase;
@@ -81,7 +83,8 @@ public class PushDownDereferenceThroughSemiJoin
         // Use the same filteringSource, since output symbols from it are not propagated through SemiJoin
         PlanNode newSemiJoin = semiJoinNode.replaceChildren(ImmutableList.of(newSource, semiJoinNode.getFilteringSource()));
 
-        Assignments assignments = node.getAssignments().rewrite(new PushDownDereferencesUtil.DereferenceReplacer(pushdownDereferences));
+        Assignments assignments = node.getAssignments().rewrite(new ExpressionNodeInliner(pushdownDereferences.entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
         return Result.ofPlanNode(new ProjectNode(context.getIdAllocator().getNextId(), newSemiJoin, assignments));
     }
 }

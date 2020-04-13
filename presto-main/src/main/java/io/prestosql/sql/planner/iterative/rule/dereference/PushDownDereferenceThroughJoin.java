@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
+import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
@@ -27,11 +28,12 @@ import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.tree.DereferenceExpression;
 import io.prestosql.sql.tree.Expression;
-import io.prestosql.sql.tree.ExpressionTreeRewriter;
 
 import java.util.Map;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
+import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.createProjectNodeIfRequired;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.getBase;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.validDereferences;
@@ -121,7 +123,10 @@ public class PushDownDereferenceThroughJoin
                 joinNode.getCriteria(),
                 leftNode.getOutputSymbols(),
                 rightNode.getOutputSymbols(),
-                joinNode.getFilter().map(expression -> ExpressionTreeRewriter.rewriteWith(new PushDownDereferencesUtil.DereferenceReplacer(pushdownDereferences), expression)),
+                joinNode.getFilter().map(expression -> replaceExpression(
+                        expression,
+                        pushdownDereferences.entrySet().stream()
+                                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference())))),
                 joinNode.getLeftHashSymbol(),
                 joinNode.getRightHashSymbol(),
                 joinNode.getDistributionType(),
@@ -129,7 +134,11 @@ public class PushDownDereferenceThroughJoin
                 joinNode.getDynamicFilters(),
                 joinNode.getReorderJoinStatsAndCost());
 
-        Assignments assignments = node.getAssignments().rewrite(new PushDownDereferencesUtil.DereferenceReplacer(pushdownDereferences));
+        Assignments assignments = node.getAssignments().rewrite(
+                new ExpressionNodeInliner(
+                        pushdownDereferences.entrySet().stream()
+                                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
+
         return Result.ofPlanNode(new ProjectNode(context.getIdAllocator().getNextId(), newJoinNode, assignments));
     }
 }

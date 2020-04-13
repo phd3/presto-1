@@ -28,9 +28,12 @@ import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.tree.DereferenceExpression;
-import io.prestosql.sql.tree.ExpressionTreeRewriter;
 
+import java.util.Map;
+
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
+import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.validDereferences;
 import static io.prestosql.sql.planner.plan.Patterns.filter;
 import static io.prestosql.sql.planner.plan.Patterns.source;
@@ -38,8 +41,15 @@ import static io.prestosql.sql.planner.plan.Patterns.tableScan;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Extracts all dereference expressions from a filter node located above a table scan. This enables pushdown of
- * dereference projections from the filter node into table scan using the {@link io.prestosql.sql.planner.iterative.rule.PushProjectionIntoTableScan} rule.
+ * This optimizer extracts all dereference expressions from a filter node located above a table scan into a ProjectNode.
+ *
+ * Extracting dereferences from a filter (eg. FilterNode(a.x = 5)) can be suboptimal if full columns are being accessed up the
+ * plan tree (eg. a), because it can result in replicated shuffling of fields (eg. a.x). So it is safer to pushdown dereferences from
+ * Filter only when there's an explicit projection on top of the filter node (Ref PushDereferencesThroughFilter).
+ *
+ * In case of a FilterNode on top of TableScanNode, we want to push all dereferences into a new ProjectNode below, so that
+ * PushProjectionIntoTableScan optimizer can push those columns in the connector, and provide new column handles for the
+ * projected subcolumns. PushPredicateIntoTableScan optimizer can then push predicates on these subcolumns into the connector.
  */
 public class ExtractDereferencesFromFilterAboveScan
         implements Rule<FilterNode>
@@ -74,16 +84,16 @@ public class ExtractDereferencesFromFilterAboveScan
                 .putIdentities(source.getOutputSymbols())
                 .putAll(expressions.inverse())
                 .build();
-        ProjectNode projectNode = new ProjectNode(context.getIdAllocator().getNextId(), source, assignments);
-
-        FilterNode filterNode = new FilterNode(
-                context.getIdAllocator().getNextId(),
-                projectNode,
-                ExpressionTreeRewriter.rewriteWith(new PushDownDereferencesUtil.DereferenceReplacer(expressions), node.getPredicate()));
 
         return Result.ofPlanNode(new ProjectNode(
                 context.getIdAllocator().getNextId(),
-                filterNode,
-                Assignments.builder().putIdentities(node.getOutputSymbols()).build()));
+                new FilterNode(
+                        context.getIdAllocator().getNextId(),
+                        new ProjectNode(context.getIdAllocator().getNextId(), source, assignments),
+                        replaceExpression(
+                                node.getPredicate(),
+                                expressions.entrySet().stream()
+                                        .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference())))),
+                Assignments.identity(node.getOutputSymbols())));
     }
 }

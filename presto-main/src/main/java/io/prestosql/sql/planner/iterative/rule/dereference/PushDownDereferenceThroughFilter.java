@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
+import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
@@ -29,8 +30,10 @@ import io.prestosql.sql.tree.DereferenceExpression;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.ExpressionTreeRewriter;
 
+import java.util.List;
 import java.util.Map;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.validDereferences;
 import static io.prestosql.sql.planner.plan.Patterns.filter;
@@ -41,7 +44,7 @@ import static java.util.Objects.requireNonNull;
 public class PushDownDereferenceThroughFilter
         implements Rule<ProjectNode>
 {
-    private final Capture<FilterNode> targetCapture = newCapture();
+    private static final Capture<FilterNode> CHILD = newCapture();
 
     public PushDownDereferenceThroughFilter(TypeAnalyzer typeAnalyzer)
     {
@@ -54,16 +57,16 @@ public class PushDownDereferenceThroughFilter
     public Pattern<ProjectNode> getPattern()
     {
         return project()
-                .with(source().matching(filter().capturedAs(targetCapture)));
+                .with(source().matching(filter().capturedAs(CHILD)));
     }
 
     @Override
     public Result apply(ProjectNode node, Captures captures, Rule.Context context)
     {
-        FilterNode filterNode = captures.get(targetCapture);
+        FilterNode filterNode = captures.get(CHILD);
 
         // Pushdown superset of dereference expressions from projections and filtering predicate
-        ImmutableList<Expression> expressions = ImmutableList.<Expression>builder()
+        List<Expression> expressions = ImmutableList.<Expression>builder()
                 .addAll(node.getAssignments().getExpressions())
                 .add(filterNode.getPredicate())
                 .build();
@@ -84,7 +87,8 @@ public class PushDownDereferenceThroughFilter
                     .putAll(HashBiMap.create(pushdownDereferences).inverse())
                     .build());
 
-        PushDownDereferencesUtil.DereferenceReplacer dereferenceReplacer = new PushDownDereferencesUtil.DereferenceReplacer(pushdownDereferences);
+        ExpressionNodeInliner dereferenceReplacer = new ExpressionNodeInliner(pushdownDereferences.entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference())));
 
         PlanNode newFilterNode = new FilterNode(
                 context.getIdAllocator().getNextId(),

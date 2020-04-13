@@ -502,8 +502,16 @@ public class PlanOptimizers
                 inlineProjections,
                 simplifyOptimizer, // Re-run the SimplifyExpressions to simplify any recomposed expressions from other optimizations
                 projectionPushDown,
+                // Projection pushdown rules may push reducing projections (e.g. dereferences) below filters for potential
+                // pushdown into the connectors. We invoke PredicatePushdown and PushPredicateIntoTableScan after this
+                // to leverage predicate pushdown on projected columns.
                 new StatsRecordingPlanOptimizer(optimizerStats, new PredicatePushDown(metadata, typeAnalyzer, true, false)),
-                new RemoveUnsupportedDynamicFilters(metadata),
+                simplifyOptimizer,
+                new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
+                        ImmutableSet.of(new PushPredicateIntoTableScan(metadata, typeAnalyzer))),
                 new UnaliasSymbolReferences(metadata), // Run again because predicate pushdown and projection pushdown might add more projections
                 new PruneUnreferencedOutputs(metadata, typeAnalyzer), // Make sure to run this before index join. Filtered projections may not have all the columns.
                 new IndexJoinOptimizer(metadata), // Run this after projections and filters have been fully simplified and pushed down
@@ -548,6 +556,11 @@ public class PlanOptimizers
                 projectionPushDown,
                 new StatsRecordingPlanOptimizer(optimizerStats, new PredicatePushDown(metadata, typeAnalyzer, true, false)),
                 simplifyOptimizer,
+                new IterativeOptimizer(
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
+                        ImmutableSet.of(new PushPredicateIntoTableScan(metadata, typeAnalyzer))),
                 new PruneUnreferencedOutputs(metadata, typeAnalyzer),
                 new IterativeOptimizer(
                         ruleStats,
@@ -639,6 +652,11 @@ public class PlanOptimizers
         builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new PredicatePushDown(metadata, typeAnalyzer, true, true)));
         builder.add(new RemoveUnsupportedDynamicFilters(metadata));
         builder.add(simplifyOptimizer);
+        new IterativeOptimizer(
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                ImmutableSet.of(new PushPredicateIntoTableScan(metadata, typeAnalyzer)));
         builder.add(inlineProjections);
         builder.add(new UnaliasSymbolReferences(metadata)); // Run unalias after merging projections to simplify projections more efficiently
         builder.add(new PruneUnreferencedOutputs(metadata, typeAnalyzer));

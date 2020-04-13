@@ -25,8 +25,6 @@ import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.tree.DefaultExpressionTraversalVisitor;
 import io.prestosql.sql.tree.DereferenceExpression;
 import io.prestosql.sql.tree.Expression;
-import io.prestosql.sql.tree.ExpressionRewriter;
-import io.prestosql.sql.tree.ExpressionTreeRewriter;
 import io.prestosql.sql.tree.LambdaExpression;
 import io.prestosql.sql.tree.SymbolReference;
 
@@ -42,7 +40,6 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.prestosql.sql.planner.SymbolsExtractor.extractAll;
-import static java.util.Objects.requireNonNull;
 
 /**
  * Provides helper methods to push down dereferences in the query plan.
@@ -100,26 +97,6 @@ public class PushDownDereferencesUtil
 
         return dereferencesToPushdown.stream()
                 .collect(toImmutableMap(Function.identity(), expression -> newSymbol(expression, context, typeAnalyzer)));
-    }
-
-    static class DereferenceReplacer
-            extends ExpressionRewriter<Void>
-    {
-        private final Map<DereferenceExpression, Symbol> expressions;
-
-        DereferenceReplacer(Map<DereferenceExpression, Symbol> expressions)
-        {
-            this.expressions = requireNonNull(expressions, "expressions is null");
-        }
-
-        @Override
-        public Expression rewriteDereferenceExpression(DereferenceExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-        {
-            if (expressions.containsKey(node)) {
-                return expressions.get(node).toSymbolReference();
-            }
-            return treeRewriter.defaultRewrite(node, context);
-        }
     }
 
     static Symbol getBase(DereferenceExpression expression)

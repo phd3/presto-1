@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
+import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
@@ -29,6 +30,7 @@ import io.prestosql.sql.tree.DereferenceExpression;
 import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesUtil.validPushdownThroughProject;
@@ -55,14 +57,15 @@ import static java.util.Objects.requireNonNull;
 public class PushDownDereferenceThrough<N extends PlanNode>
         implements Rule<ProjectNode>
 {
-    private final Capture<N> targetCapture = newCapture();
-    private final Pattern<N> targetPattern;
+    private final Capture<N> child = newCapture();
+    private final Pattern<N> pattern;
 
     private final TypeAnalyzer typeAnalyzer;
 
-    public PushDownDereferenceThrough(Class<N> aClass, TypeAnalyzer typeAnalyzer)
+    public PushDownDereferenceThrough(Class<N> nodeClass, TypeAnalyzer typeAnalyzer)
     {
-        targetPattern = Pattern.typeOf(requireNonNull(aClass, "aClass is null"));
+        requireNonNull(nodeClass, "nodeClass is null");
+        pattern = Pattern.typeOf(nodeClass);
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
     }
 
@@ -70,20 +73,20 @@ public class PushDownDereferenceThrough<N extends PlanNode>
     public Pattern<ProjectNode> getPattern()
     {
         return project()
-                .with(source().matching(targetPattern.capturedAs(targetCapture)));
+                .with(source().matching(pattern.capturedAs(child)));
     }
 
     @Override
     public Result apply(ProjectNode node, Captures captures, Context context)
     {
-        N child = captures.get(targetCapture);
-        Map<DereferenceExpression, Symbol> pushdownDereferences = validPushdownThroughProject(context, node, child, typeAnalyzer);
+        N childNode = captures.get(child);
+        Map<DereferenceExpression, Symbol> pushdownDereferences = validPushdownThroughProject(context, node, childNode, typeAnalyzer);
 
         if (pushdownDereferences.isEmpty()) {
             return Result.empty();
         }
 
-        PlanNode source = getOnlyElement(child.getSources());
+        PlanNode source = getOnlyElement(childNode.getSources());
 
         ProjectNode projectNode = new ProjectNode(
                 context.getIdAllocator().getNextId(),
@@ -93,16 +96,18 @@ public class PushDownDereferenceThrough<N extends PlanNode>
                     .putAll(HashBiMap.create(pushdownDereferences).inverse())
                     .build());
 
-        PlanNode newChildNode = child.replaceChildren(ImmutableList.of(projectNode));
+        PlanNode newChildNode = childNode.replaceChildren(ImmutableList.of(projectNode));
 
         // Sanity check to ensure propagation of new symbols through the new child
-        pushdownDereferences.values().stream()
+        pushdownDereferences.values()
                 .forEach(symbol -> checkState(
                     newChildNode.getOutputSymbols().contains(symbol),
                     "output symbols of the new child don't contain %s",
                     symbol));
 
-        Assignments assignments = node.getAssignments().rewrite(new PushDownDereferencesUtil.DereferenceReplacer(pushdownDereferences));
+        Assignments assignments = node.getAssignments().rewrite(new ExpressionNodeInliner(pushdownDereferences.entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
+
         return Result.ofPlanNode(new ProjectNode(context.getIdAllocator().getNextId(), newChildNode, assignments));
     }
 }
