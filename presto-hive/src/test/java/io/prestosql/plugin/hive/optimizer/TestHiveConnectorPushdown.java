@@ -57,6 +57,7 @@ import static io.prestosql.sql.planner.assertions.PlanMatchPattern.equiJoinClaus
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.join;
+import static io.prestosql.sql.planner.assertions.PlanMatchPattern.output;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.project;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.prestosql.sql.planner.plan.JoinNode.Type.INNER;
@@ -179,6 +180,176 @@ public class TestHiveConnectorPushdown
                                                                 equalTo(tableHandle.get().getConnectorHandle()),
                                                                 TupleDomain.all(),
                                                                 ImmutableMap.of("s_expr_1", equalTo(column1Handle))))))));
+    }
+
+    // Copy of tests from TestDereferencePushdown in presto-main
+    @Test
+    public void testDereferencePushdown()
+    {
+        String testTable = "test_simple_projection_pushdown_2";
+        QualifiedObjectName completeTableName = new QualifiedObjectName(HIVE_CATALOG_NAME, SCHEMA_NAME, testTable);
+
+        String tableName = HIVE_CATALOG_NAME + "." + SCHEMA_NAME + "." + testTable;
+        getQueryRunner().execute("CREATE TABLE " + tableName + " " + "(col0) AS" +
+                " SELECT cast(row(5, 6) as row(x bigint, y bigint)) as col0 where false");
+
+        Session session = getQueryRunner().getDefaultSession();
+
+        Optional<TableHandle> tableHandle = getTableHandle(session, completeTableName);
+        assertTrue(tableHandle.isPresent(), "expected the table handle to be present");
+
+        Map<String, ColumnHandle> columns = getColumnHandles(session, completeTableName);
+        assertTrue(columns.containsKey("col0"), "expected column not found");
+
+        HiveColumnHandle baseColumnHandle = (HiveColumnHandle) columns.get("col0");
+
+        HiveColumnHandle columnX = createProjectedColumnHandle(baseColumnHandle, ImmutableList.of(0));
+        HiveColumnHandle columnY = createProjectedColumnHandle(baseColumnHandle, ImmutableList.of(1));
+
+        // Verify Join
+        assertPlan(
+                format("SELECT b.col0.x FROM %s a, %s b WHERE a.col0.y = b.col0.y", tableName, tableName),
+                output(ImmutableList.of("b_col0_x"),
+                        join(INNER, ImmutableList.of(equiJoinClause("a_col0_y", "b_col0_y")),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("a_col0_y", equalTo(columnY)))),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("b_col0_y", equalTo(columnY), "b_col0_x", equalTo(columnX)))))));
+
+        assertPlan(format("SELECT a.col0.y " +
+                        "FROM %s a JOIN %s b ON a.col0.y = b.col0.y " +
+                        "WHERE a.col0.x = bigint '5'", tableName, tableName),
+                output(ImmutableList.of("a_y"),
+                        join(INNER, ImmutableList.of(equiJoinClause("a_y", "b_y")),
+                                anyTree(
+                                        tableScan(
+                                                table -> ((HiveTableHandle) table).getCompactEffectivePredicate().getDomains().get().entrySet().stream()
+                                                        .filter(column -> column.getKey().getName().equals("col0#x"))
+                                                        .findFirst()
+                                                        .get()
+                                                        .getValue()
+                                                        .equals(Domain.singleValue(BIGINT, 5L)),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("a_y", equalTo(columnY), "a_x", equalTo(columnX)))),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("b_y", equalTo(columnY)))))));
+
+        assertPlan(format("SELECT b.col0.x " +
+                        "FROM %s a JOIN %s b ON a.col0.y = b.col0.y " +
+                        "WHERE a.col0.x + b.col0.x < BIGINT '10'", tableName, tableName),
+                output(ImmutableList.of("b_x"),
+                        join(INNER, ImmutableList.of(equiJoinClause("a_y", "b_y")), Optional.of("a_x + b_x < bigint '10'"),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("a_y", equalTo(columnY), "a_x", equalTo(columnX)))),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("b_y", equalTo(columnY), "b_x", equalTo(columnX)))))));
+
+        // Filter
+        assertPlan(format("SELECT a.col0.y, b.col0.x " +
+                        "FROM %s a CROSS JOIN %s b " +
+                        "WHERE a.col0.x = 7 OR IS_FINITE(b.col0.y)", tableName, tableName),
+                anyTree(
+                        join(INNER, ImmutableList.of(),
+                                tableScan(
+                                        equalTo(tableHandle.get().getConnectorHandle()),
+                                        TupleDomain.all(),
+                                        ImmutableMap.of("a_x", equalTo(columnX), "a_y", equalTo(columnY))),
+                                anyTree(
+                                        tableScan(
+                                                equalTo(tableHandle.get().getConnectorHandle()),
+                                                TupleDomain.all(),
+                                                ImmutableMap.of("b_x", equalTo(columnX), "b_y", equalTo(columnY)))))));
+
+        // Window
+        assertPlan(format("SELECT col0.x AS x, ROW_NUMBER() OVER (PARTITION BY col0.y ORDER BY col0.y) AS rn " +
+                        "FROM %s ", tableName),
+                anyTree(
+                        tableScan(
+                                equalTo(tableHandle.get().getConnectorHandle()),
+                                TupleDomain.all(),
+                                ImmutableMap.of("a_x", equalTo(columnX), "a_y", equalTo(columnY)))));
+
+//        // SemiJoin
+//        assertPlan(format("SELECT msg.y " +
+//                        "FROM %s " +
+//                        "WHERE " +
+//                        "col0.x IN (SELECT col0.z FROM %s)", tableName, tableName),
+//                anyTree(
+//                        semiJoin("a_x", "b_z", "semi_join_symbol",
+//                                anyTree(
+//                                        strictProject(ImmutableMap.of("a_x", expression("msg.x"), "a_y", expression("msg.y")),
+//                                                values("msg"))),
+//                                anyTree(
+//                                        tableScan(
+//                                            equalTo(tableHandle.get().getConnectorHandle()),
+//                                            TupleDomain.all(),
+//                                            ImmutableMap.of("b_z", equalTo(columnX), "a_y", equalTo(columnY))))));
+
+        assertPlan(format("SELECT b.col0.x " +
+                        "FROM %s a, %s b " +
+                        "WHERE a.col0.y = b.col0.y " +
+                        "LIMIT 100", tableName, tableName),
+                anyTree(join(INNER, ImmutableList.of(equiJoinClause("a_y", "b_y")),
+                        anyTree(tableScan(
+                                equalTo(tableHandle.get().getConnectorHandle()),
+                                TupleDomain.all(),
+                                ImmutableMap.of("a_y", equalTo(columnY)))),
+                        anyTree(tableScan(
+                                equalTo(tableHandle.get().getConnectorHandle()),
+                                TupleDomain.all(),
+                                ImmutableMap.of("b_y", equalTo(columnY), "b_x", equalTo(columnX)))))));
+
+        assertPlan(format("SELECT a.col0.y " +
+                        "FROM %s a JOIN %s b ON a.col0.y = b.col0.y " +
+                        "WHERE a.col0.x = BIGINT '5' " +
+                        "LIMIT 100", tableName, tableName),
+                anyTree(join(INNER, ImmutableList.of(equiJoinClause("a_y", "b_y")),
+                        anyTree(
+                                tableScan(
+                                        table -> ((HiveTableHandle) table).getCompactEffectivePredicate().getDomains().get().entrySet().stream()
+                                                .filter(column -> column.getKey().getName().equals("col0#x"))
+                                                .findFirst()
+                                                .get()
+                                                .getValue()
+                                                .equals(Domain.singleValue(BIGINT, 5L)),
+                                        TupleDomain.all(),
+                                        ImmutableMap.of("a_y", equalTo(columnY), "a_x", equalTo(columnX)))),
+                        anyTree(
+                                tableScan(
+                                        equalTo(tableHandle.get().getConnectorHandle()),
+                                        TupleDomain.all(),
+                                        ImmutableMap.of("b_y", equalTo(columnY)))))));
+
+        assertPlan(format("SELECT b.col0.x " +
+                        "FROM %s a JOIN %s b ON a.col0.y = b.col0.y " +
+                        "WHERE a.col0.x + b.col0.x < BIGINT '10' " +
+                        "LIMIT 100", tableName, tableName),
+                anyTree(join(INNER, ImmutableList.of(equiJoinClause("a_y", "b_y")), Optional.of("a_x + b_x < bigint '10'"),
+                        anyTree(
+                                tableScan(
+                                        equalTo(tableHandle.get().getConnectorHandle()),
+                                        TupleDomain.all(),
+                                        ImmutableMap.of("a_y", equalTo(columnY), "a_x", equalTo(columnX)))),
+                        anyTree(
+                                tableScan(
+                                        equalTo(tableHandle.get().getConnectorHandle()),
+                                        TupleDomain.all(),
+                                        ImmutableMap.of("b_y", equalTo(columnY), "b_x", equalTo(columnX)))))));
     }
 
     @AfterClass(alwaysRun = true)
