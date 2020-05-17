@@ -27,21 +27,6 @@ import io.prestosql.spi.type.Type;
 import io.prestosql.sql.planner.OrderingScheme;
 import io.prestosql.sql.planner.assertions.ExpressionMatcher;
 import io.prestosql.sql.planner.assertions.PlanMatchPattern;
-import io.prestosql.sql.planner.assertions.UnnestedSymbolMatcher;
-import io.prestosql.sql.planner.iterative.rule.dereference.ExtractDereferencesFromFilterAboveScan;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferenceThroughFilter;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferenceThroughJoin;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferenceThroughProject;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferenceThroughSemiJoin;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferenceThroughUnnest;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughAssignUniqueId;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughLimit;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughMarkDistinct;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughRowNumber;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughSort;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughTopN;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughTopNRowNumber;
-import io.prestosql.sql.planner.iterative.rule.dereference.PushDownDereferencesThroughWindow;
 import io.prestosql.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.prestosql.sql.planner.plan.Assignments;
 import io.prestosql.sql.planner.plan.UnnestNode;
@@ -63,6 +48,7 @@ import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.RowType.field;
 import static io.prestosql.spi.type.RowType.rowType;
 import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.prestosql.sql.planner.assertions.PlanMatchPattern.UnnestMapping.unnestMapping;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.assignUniqueId;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.functionCall;
@@ -298,12 +284,10 @@ public class TestPushDownDereferencesRules
                                         "deref_unnest", PlanMatchPattern.expression("unnested_row.f2")),    // not pushed down
                                 unnest(
                                         ImmutableList.of("replicate", "symbol"),
-                                        ImmutableMap.of(
-                                                "unnested_bigint", new UnnestedSymbolMatcher("nested"),
-                                                "unnested_row", new UnnestedSymbolMatcher("nested")),
+                                        ImmutableList.of(unnestMapping("nested", ImmutableList.of("unnested_bigint", "unnested_row"))),
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "expr", PlanMatchPattern.expression("replicate.f2"),
+                                                        "symbol", PlanMatchPattern.expression("replicate.f2"),
                                                         "replicate", PlanMatchPattern.expression("replicate"),
                                                         "nested", PlanMatchPattern.expression("nested")),
                                                 values("replicate", "nested")))));
@@ -379,28 +363,31 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg_x"), expression("msg.x"))
-                                        .put(p.symbol("msg_y"), expression("msg.y"))
+                                        .put(p.symbol("msg1_x"), expression("msg1.x"))
+                                        .put(p.symbol("msg2_y"), expression("msg2.y"))
                                         .put(p.symbol("z"), expression("z"))
                                         .build(),
                                 p.limit(10,
-                                        p.values(p.symbol("msg", ROW_TYPE), p.symbol("z")))))
+                                        ImmutableList.of(p.symbol("msg2", ROW_TYPE)),
+                                        p.values(p.symbol("msg1", ROW_TYPE), p.symbol("msg2", ROW_TYPE), p.symbol("z")))))
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg_x", PlanMatchPattern.expression("x"))
-                                        .put("msg_y", PlanMatchPattern.expression("y"))
+                                        .put("msg1_x", PlanMatchPattern.expression("x"))
+                                        .put("msg2_y", PlanMatchPattern.expression("msg2.y"))
                                         .put("z", PlanMatchPattern.expression("z"))
                                         .build(),
-                                limit(10,
+                                limit(
+                                        10,
+                                        ImmutableList.of(sort("msg2", ASCENDING, FIRST)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("x", PlanMatchPattern.expression("msg.x"))
-                                                        .put("y", PlanMatchPattern.expression("msg.y"))
+                                                        .put("x", PlanMatchPattern.expression("msg1.x"))
                                                         .put("z", PlanMatchPattern.expression("z"))
-                                                        .put("msg", PlanMatchPattern.expression("msg"))
+                                                        .put("msg1", PlanMatchPattern.expression("msg1"))
+                                                        .put("msg2", PlanMatchPattern.expression("msg2"))
                                                         .build(),
-                                                values("msg", "z")))));
+                                                values("msg1", "msg2", "z")))));
     }
 
     @Test

@@ -11,26 +11,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.HashBiMap;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.ExpressionNodeInliner;
-import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
 import io.prestosql.sql.planner.plan.Assignments;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.tree.DereferenceExpression;
+import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.matching.Capture.newCapture;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.getBase;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.getBase;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
 import static java.util.Objects.requireNonNull;
@@ -38,15 +41,13 @@ import static java.util.Objects.requireNonNull;
 /**
  * Transforms:
  * <pre>
- *  Project(msg_x := msg.x)
- *    Project(msg := msg)
- *      Source(msg)
+ *  Project(c := f(a.x), d := g(b))
+ *    Project(a, b)
  *  </pre>
  * to:
  * <pre>
- *  Project(msg_x := symbol)
- *    Project(msg := msg, symbol := msg.x)
- *      Source(msg)
+ *  Project(c := f(symbol), d := g(b))
+ *    Project(a, b, symbol := a.x)
  * </pre>
  */
 public class PushDownDereferenceThroughProject
@@ -72,18 +73,27 @@ public class PushDownDereferenceThroughProject
     {
         ProjectNode child = captures.get(CHILD);
 
-        // Extract dereferences from assignments for pushdown
-        Map<DereferenceExpression, Symbol> dereferences = validDereferences(node.getAssignments().getExpressions(), context, typeAnalyzer, true).entrySet().stream()
-                .filter(entry -> child.getSource().getOutputSymbols().contains(getBase(entry.getKey()))) // exclude dereferences on symbols being synthesized within child
-                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+        // Extract dereferences from project node assignments for pushdown
+        Set<DereferenceExpression> dereferences = extractDereferences(node.getAssignments().getExpressions(), false);
+
+        // Exclude dereferences on symbols being synthesized within child
+        dereferences = dereferences.stream()
+                .filter(expression -> child.getSource().getOutputSymbols().contains(getBase(expression)))
+                .collect(toImmutableSet());
 
         if (dereferences.isEmpty()) {
             return Result.empty();
         }
 
-        // Prepare new assignments replacing dereferences with new symbols
-        Assignments assignments = node.getAssignments().rewrite(new ExpressionNodeInliner(dereferences.entrySet().stream()
-                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
+        // Create new symbols for dereference expressions
+        Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
+
+        // Rewrite project node assignments using new symbols for dereference expressions
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
+        Assignments assignments = node.getAssignments().rewrite(expression -> replaceExpression(expression, mappings));
 
         return Result.ofPlanNode(
                 new ProjectNode(
@@ -93,7 +103,7 @@ public class PushDownDereferenceThroughProject
                                 child.getSource(),
                                 Assignments.builder()
                                         .putAll(child.getAssignments())
-                                        .putAll(HashBiMap.create(dereferences).inverse())
+                                        .putAll(dereferenceAssignments)
                                         .build()),
                         assignments));
     }

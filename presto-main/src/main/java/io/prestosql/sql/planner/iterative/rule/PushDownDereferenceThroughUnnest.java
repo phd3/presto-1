@@ -11,14 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
@@ -30,12 +29,14 @@ import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.getBase;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.getBase;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
 import static io.prestosql.sql.planner.plan.Patterns.unnest;
@@ -44,16 +45,16 @@ import static java.util.Objects.requireNonNull;
 /**
  * Transforms:
  * <pre>
- *  Project(a_x := a.x)
- *      Unnest(replicate = [a], unnest = (b_array -> [b_bigint]))
- *          Source(a, b_array)
+ *  Project(D := f1(A.x), E := f2(C), B_BIGINT)
+ *      Unnest(replicate = [A, C], unnest = (B_ARRAY -> [B_BIGINT]))
+ *          Source(A, B_ARAAY, C)
  *  </pre>
  * to:
  * <pre>
- *  Project(a_x := symbol)
- *      Unnest(replicate = [a, symbol], unnest = (b_array -> [b_bigint]))
- *          Project(a := a, symbol := a.x, b_array := b_array)
- *              Source(a, b_array)
+ *  Project(D := f1(symbol), E := f2(C), B_BIGINT)
+ *      Unnest(replicate = [A, C, symbol], unnest = (B_ARAAY -> [B_BIGINT]))
+ *          Project(A, B_ARRAY, C, symbol := A.x)
+ *              Source(A, B_ARAAY, C)
  * </pre>
  *
  * Pushes down dereference projections through Unnest. Currently, the pushdown is only supported for dereferences on replicate symbols.
@@ -86,16 +87,27 @@ public class PushDownDereferenceThroughUnnest
         expressionsBuilder.addAll(projectNode.getAssignments().getExpressions());
         unnestNode.getFilter().ifPresent(expressionsBuilder::add);
 
-        Map<DereferenceExpression, Symbol> dereferences = validDereferences(expressionsBuilder.build(), context, typeAnalyzer, true);
+        // Extract dereferences for pushdown
+        Set<DereferenceExpression> dereferences = extractDereferences(expressionsBuilder.build(), false);
 
-        // Pushdown dereferences on replicate symbols
-        Map<DereferenceExpression, Symbol> pushdownDereferences = dereferences.entrySet().stream()
-                .filter(entry -> unnestNode.getReplicateSymbols().contains(getBase(entry.getKey())))
-                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+        // Only retain dereferences on replicate symbols
+        dereferences = dereferences.stream()
+                .filter(expression -> unnestNode.getReplicateSymbols().contains(getBase(expression)))
+                .collect(toImmutableSet());
 
-        if (pushdownDereferences.isEmpty()) {
+        if (dereferences.isEmpty()) {
             return Result.empty();
         }
+
+        // Create new symbols for dereference expressions
+        Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
+
+        // Rewrite project node assignments using new symbols for dereference expressions
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
+        Assignments newAssignments = projectNode.getAssignments().rewrite(expression -> replaceExpression(expression, mappings));
 
         // Create a new ProjectNode (above the original source) adding dereference projections on replicated symbols
         ProjectNode source = new ProjectNode(
@@ -103,30 +115,24 @@ public class PushDownDereferenceThroughUnnest
                 unnestNode.getSource(),
                 Assignments.builder()
                         .putIdentities(unnestNode.getSource().getOutputSymbols())
-                        .putAll(HashBiMap.create(pushdownDereferences).inverse())
+                        .putAll(dereferenceAssignments)
                         .build());
-
-        Map<DereferenceExpression, SymbolReference> expressionMapping = pushdownDereferences.entrySet().stream()
-                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()));
-
-        // Modify replicate symbols and filter
-        UnnestNode newUnnest = new UnnestNode(
-                context.getIdAllocator().getNextId(),
-                source,
-                ImmutableList.<Symbol>builder()
-                    .addAll(unnestNode.getReplicateSymbols())
-                    .addAll(pushdownDereferences.values())
-                    .build(),
-                unnestNode.getMappings(),
-                unnestNode.getOrdinalitySymbol(),
-                unnestNode.getJoinType(),
-                unnestNode.getFilter().map(filter -> replaceExpression(filter, expressionMapping)));
 
         // Create projectNode with the new unnest node and assignments with replaced dereferences
         return Result.ofPlanNode(
                 new ProjectNode(
                         context.getIdAllocator().getNextId(),
-                        newUnnest,
-                        projectNode.getAssignments().rewrite(new ExpressionNodeInliner(expressionMapping))));
+                        new UnnestNode(
+                                context.getIdAllocator().getNextId(),
+                                source,
+                                ImmutableList.<Symbol>builder()
+                                        .addAll(unnestNode.getReplicateSymbols())
+                                        .addAll(dereferenceAssignments.getSymbols())
+                                        .build(),
+                                unnestNode.getMappings(),
+                                unnestNode.getOrdinalitySymbol(),
+                                unnestNode.getJoinType(),
+                                unnestNode.getFilter().map(filter -> replaceExpression(filter, mappings))),
+                        newAssignments));
     }
 }

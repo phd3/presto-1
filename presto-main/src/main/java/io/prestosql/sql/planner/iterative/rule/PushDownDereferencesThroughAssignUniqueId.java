@@ -11,27 +11,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.ExpressionNodeInliner;
-import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
 import io.prestosql.sql.planner.plan.AssignUniqueId;
 import io.prestosql.sql.planner.plan.Assignments;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.tree.DereferenceExpression;
+import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
 import static io.prestosql.sql.planner.plan.Patterns.assignUniqueId;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
@@ -40,16 +42,16 @@ import static java.util.Objects.requireNonNull;
 /**
  * Transforms:
  * <pre>
- *  Project(msg_x := msg.x)
+ *  Project(C := f1(A.x), D := f2(B))
  *      AssignUniqueId
- *          Source(msg)
+ *          Source(A, B)
  *  </pre>
  * to:
  * <pre>
- *  Project(msg_x := symbol)
+ *  Project(C := f1(symbol), D := f2(B))
  *      AssignUniqueId
- *          Project(msg := msg, symbol := msg.x)
- *              Source(msg)
+ *          Project(A, B, symbol := A.x)
+ *              Source(A, B)
  * </pre>
  */
 public class PushDownDereferencesThroughAssignUniqueId
@@ -74,17 +76,25 @@ public class PushDownDereferencesThroughAssignUniqueId
     public Result apply(ProjectNode projectNode, Captures captures, Context context)
     {
         AssignUniqueId assignUniqueId = captures.get(CHILD);
-        Map<DereferenceExpression, Symbol> pushdownDereferences = validDereferences(projectNode.getAssignments().getExpressions(), context, typeAnalyzer, true);
+
+        // Extract dereferences from project node assignments for pushdown
+        Set<DereferenceExpression> dereferences = extractDereferences(projectNode.getAssignments().getExpressions(), false);
 
         // We do not need to filter dereferences on idColumn symbol since it is supposed to be of BIGINT type.
 
-        if (pushdownDereferences.isEmpty()) {
+        if (dereferences.isEmpty()) {
             return Result.empty();
         }
 
-        // Prepare new assignments by replacing dereference expressions with new symbols
-        Assignments newAssignments = projectNode.getAssignments().rewrite(new ExpressionNodeInliner(pushdownDereferences.entrySet().stream()
-                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
+        // Create new symbols for dereference expressions
+        Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
+
+        // Rewrite project node assignments using new symbols for dereference expressions
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
+        Assignments newAssignments = projectNode.getAssignments().rewrite(expression -> replaceExpression(expression, mappings));
 
         return Result.ofPlanNode(
                 new ProjectNode(
@@ -95,7 +105,7 @@ public class PushDownDereferencesThroughAssignUniqueId
                                         assignUniqueId.getSource(),
                                         Assignments.builder()
                                                 .putIdentities(assignUniqueId.getSource().getOutputSymbols())
-                                                .putAll(HashBiMap.create(pushdownDereferences).inverse())
+                                                .putAll(dereferenceAssignments)
                                                 .build()))),
                         newAssignments));
     }

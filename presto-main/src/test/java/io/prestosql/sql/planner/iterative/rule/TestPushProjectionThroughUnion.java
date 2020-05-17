@@ -36,7 +36,7 @@ import static io.prestosql.sql.planner.assertions.PlanMatchPattern.values;
 public class TestPushProjectionThroughUnion
         extends BaseRuleTest
 {
-    private static final RowType MSG_TYPE = RowType.from(ImmutableList.of(new RowType.Field(Optional.of("x"), BIGINT), new RowType.Field(Optional.of("y"), BIGINT)));
+    private static final RowType ROW_TYPE = RowType.from(ImmutableList.of(new RowType.Field(Optional.of("x"), BIGINT), new RowType.Field(Optional.of("y"), BIGINT)));
 
     @Test
     public void testDoesNotFire()
@@ -80,11 +80,11 @@ public class TestPushProjectionThroughUnion
                     Symbol a = p.symbol("a");
                     Symbol b = p.symbol("b");
                     Symbol c = p.symbol("c");
-                    Symbol d = p.symbol("d", MSG_TYPE);
+                    Symbol d = p.symbol("d", ROW_TYPE);
                     Symbol cTimes3 = p.symbol("c_times_3");
                     Symbol dX = p.symbol("d_x");
-                    Symbol z = p.symbol("z", MSG_TYPE);
-                    Symbol w = p.symbol("w", MSG_TYPE);
+                    Symbol z = p.symbol("z", ROW_TYPE);
+                    Symbol w = p.symbol("w", ROW_TYPE);
                     return p.project(
                             Assignments.of(
                                     cTimes3, new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.MULTIPLY, c.toSymbolReference(), new LongLiteral("3")),
@@ -107,10 +107,11 @@ public class TestPushProjectionThroughUnion
                                         values(ImmutableList.of("a", "z"))),
                                 project(
                                         ImmutableMap.of("b_times_3", expression("b * 3"), "w_x", expression("w.x")),
-                                        values(ImmutableList.of("b", "w")))));
-//                                // verify that data originally on symbols aliased as x1 and x2 is part of exchange output
-//                                .withNumberOfOutputColumns(1)
-//                                .withAlias("a_times_3")
-//                                .withAlias("b_times_3"));
+                                        values(ImmutableList.of("b", "w"))))
+                                .withNumberOfOutputColumns(2)
+                                .withAlias("a_times_3")
+                                .withAlias("b_times_3")
+                                .withAlias("z_x")
+                                .withAlias("w_x"));
     }
 }

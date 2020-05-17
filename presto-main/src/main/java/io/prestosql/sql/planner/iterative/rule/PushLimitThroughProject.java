@@ -14,6 +14,7 @@
 package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
@@ -26,6 +27,7 @@ import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.SymbolReference;
 
 import static io.prestosql.matching.Capture.newCapture;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.exclusiveDereferences;
 import static io.prestosql.sql.planner.iterative.rule.Util.transpose;
 import static io.prestosql.sql.planner.plan.Patterns.limit;
 import static io.prestosql.sql.planner.plan.Patterns.project;
@@ -53,6 +55,12 @@ public class PushLimitThroughProject
     public Result apply(LimitNode parent, Captures captures, Context context)
     {
         ProjectNode projectNode = captures.get(CHILD);
+
+        // Do not push down limit if the projection is made up of exclusive dereferences. This prevents
+        // undoing of dereference pushdown through limit.
+        if (exclusiveDereferences(ImmutableSet.copyOf(projectNode.getAssignments().getExpressions()))) {
+            return Result.empty();
+        }
 
         // for a LimitNode without ties, simply reorder the nodes
         if (!parent.isWithTies()) {

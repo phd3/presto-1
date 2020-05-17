@@ -11,14 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.ExpressionNodeInliner;
 import io.prestosql.sql.planner.OrderingScheme;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
@@ -31,13 +30,15 @@ import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.getBase;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.getBase;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
 import static io.prestosql.sql.planner.plan.Patterns.window;
@@ -46,16 +47,16 @@ import static java.util.Objects.requireNonNull;
 /**
  * Transforms:
  * <pre>
- *  Project(msg1_x := msg1.x, msg2_x := msg2.x, msg3_x := msg3.x, msg4_x := msg4.x)
- *      Window(orderBy = [msg2], partitionBy = [msg3], min_msg4 := min(msg4))
- *          Source(msg1, msg2, msg3, msg4)
+ *  Project(G := f1(A.x), H := f2(B.x), J := f3(C.x), K := f4(D.x), L := f5(F))
+ *      Window(orderBy = [B], partitionBy = [C], min_D := min(D))
+ *          Source(A, B, C, D, E, F)
  *  </pre>
  * to:
  * <pre>
- *  Project(msg1_x := symbol, msg2_x := msg2.x, msg3_x := msg3.x, msg4_x := msg4.x)
- *      Window(orderBy = [msg2], partitionBy = [msg3], min_msg4 := min(msg4))
- *          Project(msg1 := msg1, symbol := msg1.x, msg2 := msg2, msg3 := msg3, msg4 := msg4)
- *              Source(msg1, msg2, msg3, msg4)
+ *  Project(G := f1(symbol), H := f2(B.x), J := f3(C.x), K := f4(D.x), L := f5(F))
+ *      Window(orderBy = [B], partitionBy = [C], min_D := min(D))
+ *          Project(A, B, C, D, E, F, symbol := A.x)
+ *              Source(A, B, C, D, E, F)
  * </pre>
  *
  * Pushes down dereference projections through Window. Excludes dereferences on symbols in ordering scheme and partitionBy
@@ -83,37 +84,42 @@ public class PushDownDereferencesThroughWindow
     public Result apply(ProjectNode projectNode, Captures captures, Context context)
     {
         WindowNode windowNode = captures.get(CHILD);
-        Map<DereferenceExpression, Symbol> dereferenceProjections = validDereferences(
+
+        // Extract dereferences for pushdown
+        Set<DereferenceExpression> dereferences = extractDereferences(
                 ImmutableList.<Expression>builder()
-                    .addAll(projectNode.getAssignments().getExpressions())
-                    // also include dereference projections used in window functions
-                    .addAll(windowNode.getWindowFunctions().values().stream()
-                            .flatMap(function -> function.getArguments().stream())
-                            .collect(toImmutableList()))
-                    .build(),
-                context,
-                typeAnalyzer,
-                true);
+                        .addAll(projectNode.getAssignments().getExpressions())
+                        // also include dereference projections used in window functions
+                        .addAll(windowNode.getWindowFunctions().values().stream()
+                                .flatMap(function -> function.getArguments().stream())
+                                .collect(toImmutableList()))
+                        .build(),
+                false);
 
         WindowNode.Specification specification = windowNode.getSpecification();
-        Map<DereferenceExpression, Symbol> pushdownDereferences = dereferenceProjections.entrySet().stream()
-                .filter(entry -> {
-                    Symbol symbol = getBase(entry.getKey());
+        dereferences = dereferences.stream()
+                .filter(expression -> {
+                    Symbol symbol = getBase(expression);
                     // Exclude partitionBy, orderBy and synthesized symbols
                     return !specification.getPartitionBy().contains(symbol) &&
                             !specification.getOrderingScheme().map(OrderingScheme::getOrderBy).orElse(ImmutableList.of()).contains(symbol) &&
                             !windowNode.getCreatedSymbols().contains(symbol);
                 })
-                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+                .collect(toImmutableSet());
 
-        if (pushdownDereferences.isEmpty()) {
+        if (dereferences.isEmpty()) {
             return Result.empty();
         }
 
-        Map<DereferenceExpression, SymbolReference> expressionMapping = pushdownDereferences.entrySet().stream()
-                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()));
+        // Create new symbols for dereference expressions
+        Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
 
-        Assignments newAssignments = projectNode.getAssignments().rewrite(new ExpressionNodeInliner(expressionMapping));
+        // Rewrite project node assignments using new symbols for dereference expressions
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
+        Assignments newAssignments = projectNode.getAssignments().rewrite(expression -> replaceExpression(expression, mappings));
 
         return Result.ofPlanNode(
                 new ProjectNode(
@@ -125,7 +131,7 @@ public class PushDownDereferencesThroughWindow
                                         windowNode.getSource(),
                                         Assignments.builder()
                                                 .putIdentities(windowNode.getSource().getOutputSymbols())
-                                                .putAll(HashBiMap.create(pushdownDereferences).inverse())
+                                                .putAll(dereferenceAssignments)
                                                 .build()),
                                 windowNode.getSpecification(),
                                 // Replace dereference expressions in functions
@@ -137,7 +143,7 @@ public class PushDownDereferencesThroughWindow
                                                     return new WindowNode.Function(
                                                             oldFunction.getResolvedFunction(),
                                                             oldFunction.getArguments().stream()
-                                                                    .map(expression -> replaceExpression(expression, expressionMapping))
+                                                                    .map(expression -> replaceExpression(expression, mappings))
                                                                     .collect(toImmutableList()),
                                                             oldFunction.getFrame(),
                                                             oldFunction.isIgnoreNulls());

@@ -14,6 +14,7 @@
 package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
@@ -33,6 +34,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static io.prestosql.matching.Capture.newCapture;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.exclusiveDereferences;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
 import static io.prestosql.sql.planner.plan.Patterns.topN;
@@ -76,6 +78,11 @@ public final class PushTopNThroughProject
     public Result apply(TopNNode parent, Captures captures, Context context)
     {
         ProjectNode projectNode = captures.get(PROJECT_CHILD);
+
+        // Do not push topN if the projection is made up of exclusive dereferences
+        if (exclusiveDereferences(ImmutableSet.copyOf(projectNode.getAssignments().getExpressions()))) {
+            return Result.empty();
+        }
 
         // do not push topN between projection and filter(table scan) so that they can be merged into a PageProcessor
         PlanNode projectSource = context.getLookup().resolve(projectNode.getSource());

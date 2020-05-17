@@ -26,6 +26,7 @@ import static io.prestosql.sql.planner.assertions.PlanMatchPattern.equiJoinClaus
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.join;
+import static io.prestosql.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.output;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.project;
 import static io.prestosql.sql.planner.assertions.PlanMatchPattern.semiJoin;
@@ -180,6 +181,14 @@ public class TestDereferencePushDown
     @Test
     public void testDereferencePushdownLimit()
     {
+        assertPlan("WITH t(msg) AS (VALUES ROW(CAST(ROW(1, 2.0) AS ROW(x BIGINT, y DOUBLE))), ROW(CAST(ROW(3, 4.0) AS ROW(x BIGINT, y DOUBLE))))" +
+                "SELECT msg.x * 3  FROM t limit 1",
+                anyTree(
+                        strictProject(ImmutableMap.of("x_into_3", expression("msg_x * BIGINT '3'")),
+                                limit(1,
+                                        strictProject(ImmutableMap.of("msg_x", expression("msg.x")),
+                                                values("msg"))))));
+
         assertPlan("WITH t(msg) AS (VALUES ROW(CAST(ROW(1, 2.0) AS ROW(x BIGINT, y DOUBLE))))" +
                         "SELECT b.msg.x " +
                         "FROM t a, t b " +

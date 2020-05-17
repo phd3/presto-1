@@ -11,28 +11,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.ExpressionNodeInliner;
-import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
 import io.prestosql.sql.planner.plan.Assignments;
 import io.prestosql.sql.planner.plan.MarkDistinctNode;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.tree.DereferenceExpression;
+import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.prestosql.matching.Capture.newCapture;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.getBase;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.getBase;
 import static io.prestosql.sql.planner.plan.Patterns.markDistinct;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
@@ -41,16 +44,16 @@ import static java.util.Objects.requireNonNull;
 /**
  * Transforms:
  * <pre>
- *  Project(msg_x := msg.x)
- *      MarkDistinct(distinctSymbols = [a])
- *          Source(msg, a)
+ *  Project(D := f1(A.x), E := f2(B.x), G := f3(C))
+ *      MarkDistinct(distinctSymbols = [B])
+ *          Source(A, B, C)
  *  </pre>
  * to:
  * <pre>
- *  Project(msg_x := symbol)
- *      MarkDistinct(distinctSymbols = [a])
- *          Project(msg := msg, symbol := msg.x, a := a)
- *              Source(msg, a)
+ *  Project(D := f1(symbol), E := f2(B.x), G := f3(C))
+ *      MarkDistinct(distinctSymbols = [B])
+ *          Project(A, B, C, symbol := A.x)
+ *              Source(A, B, C)
  * </pre>
  *
  * Pushes down dereference projections through MarkDistinct. Excludes dereferences on "distinct symbols" to avoid data
@@ -78,21 +81,29 @@ public class PushDownDereferencesThroughMarkDistinct
     public Result apply(ProjectNode projectNode, Captures captures, Context context)
     {
         MarkDistinctNode markDistinctNode = captures.get(CHILD);
-        Map<DereferenceExpression, Symbol> dereferenceProjections = validDereferences(projectNode.getAssignments().getExpressions(), context, typeAnalyzer, true);
+
+        // Extract dereferences from project node assignments for pushdown
+        Set<DereferenceExpression> dereferences = extractDereferences(projectNode.getAssignments().getExpressions(), false);
 
         // Exclude dereferences on distinct symbols being used in markDistinctNode. We do not need to filter
         // dereferences on markerSymbol since it is supposed to be of boolean type.
-        Map<DereferenceExpression, Symbol> pushdownDereferences = dereferenceProjections.entrySet().stream()
-                .filter(entry -> !markDistinctNode.getDistinctSymbols().contains(getBase(entry.getKey())))
-                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+        dereferences = dereferences.stream()
+                .filter(expression -> !markDistinctNode.getDistinctSymbols().contains(getBase(expression)))
+                .collect(toImmutableSet());
 
-        if (pushdownDereferences.isEmpty()) {
+        if (dereferences.isEmpty()) {
             return Result.empty();
         }
 
-        // Prepare new assignments by replacing dereference expressions with new symbols
-        Assignments newAssignments = projectNode.getAssignments().rewrite(new ExpressionNodeInliner(pushdownDereferences.entrySet().stream()
-                .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference()))));
+        // Create new symbols for dereference expressions
+        Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
+
+        // Rewrite project node assignments using new symbols for dereference expressions
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
+        Assignments newAssignments = projectNode.getAssignments().rewrite(expression -> replaceExpression(expression, mappings));
 
         return Result.ofPlanNode(
                 new ProjectNode(
@@ -103,7 +114,7 @@ public class PushDownDereferencesThroughMarkDistinct
                                         markDistinctNode.getSource(),
                                         Assignments.builder()
                                                 .putIdentities(markDistinctNode.getSource().getOutputSymbols())
-                                                .putAll(HashBiMap.create(pushdownDereferences).inverse())
+                                                .putAll(dereferenceAssignments)
                                                 .build()))),
                         newAssignments));
     }

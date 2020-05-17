@@ -11,15 +11,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.sql.planner.iterative.rule.dereference;
+package io.prestosql.sql.planner.iterative.rule;
 
-import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import io.prestosql.matching.Capture;
 import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
-import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.Rule;
 import io.prestosql.sql.planner.plan.Assignments;
@@ -28,19 +26,35 @@ import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.ProjectNode;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.sql.tree.DereferenceExpression;
+import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.Map;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
 import static io.prestosql.sql.planner.ExpressionNodeInliner.replaceExpression;
-import static io.prestosql.sql.planner.iterative.rule.dereference.DereferencePushdown.validDereferences;
+import static io.prestosql.sql.planner.iterative.rule.DereferencePushdown.extractDereferences;
 import static io.prestosql.sql.planner.plan.Patterns.filter;
 import static io.prestosql.sql.planner.plan.Patterns.source;
 import static io.prestosql.sql.planner.plan.Patterns.tableScan;
 import static java.util.Objects.requireNonNull;
 
 /**
+ * Transforms:
+ * <pre>
+ *      Filter(f1(A.x.y) = 1 AND f2(B.m) = 2 AND f3(A.x) = 6)
+ *          Source(A, B, C)
+ *  </pre>
+ * to:
+ * <pre>
+ *  Project(A, B, C)
+ *      Filter(f1(D) = 1 AND f2(E) = 2 AND f3(G) = 6)
+ *          Project(A, B, C, D := A.x.y, E := B.m, G := A.x)
+ *              Source(A, B, C)
+ * </pre>
+ *
  * This optimizer extracts all dereference expressions from a filter node located above a table scan into a ProjectNode.
  *
  * Extracting dereferences from a filter (eg. FilterNode(a.x = 5)) can be suboptimal if full columns are being accessed up the
@@ -72,28 +86,30 @@ public class ExtractDereferencesFromFilterAboveScan
     @Override
     public Result apply(FilterNode node, Captures captures, Context context)
     {
-        BiMap<DereferenceExpression, Symbol> expressions =
-                HashBiMap.create(validDereferences(ImmutableList.of(node.getPredicate()), context, typeAnalyzer, false));
-
-        if (expressions.isEmpty()) {
+        Set<DereferenceExpression> dereferences = extractDereferences(ImmutableList.of(node.getPredicate()), true);
+        if (dereferences.isEmpty()) {
             return Result.empty();
         }
 
-        PlanNode source = node.getSource();
-        Assignments assignments = Assignments.builder()
-                .putIdentities(source.getOutputSymbols())
-                .putAll(expressions.inverse())
-                .build();
+        Assignments assignments = Assignments.of(dereferences, context.getSession(), context.getSymbolAllocator(), typeAnalyzer);
+        Map<Expression, SymbolReference> mappings = HashBiMap.create(assignments.getMap())
+                .inverse()
+                .entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
 
+        PlanNode source = node.getSource();
         return Result.ofPlanNode(new ProjectNode(
                 context.getIdAllocator().getNextId(),
                 new FilterNode(
                         context.getIdAllocator().getNextId(),
-                        new ProjectNode(context.getIdAllocator().getNextId(), source, assignments),
-                        replaceExpression(
-                                node.getPredicate(),
-                                expressions.entrySet().stream()
-                                        .collect(toImmutableMap(Map.Entry::getKey, mapping -> mapping.getValue().toSymbolReference())))),
+                        new ProjectNode(
+                                context.getIdAllocator().getNextId(),
+                                source,
+                                Assignments.builder()
+                                        .putIdentities(source.getOutputSymbols())
+                                        .putAll(assignments)
+                                        .build()),
+                        replaceExpression(node.getPredicate(), mappings)),
                 Assignments.identity(node.getOutputSymbols())));
     }
 }
