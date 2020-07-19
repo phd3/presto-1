@@ -18,6 +18,7 @@ import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.prestosql.hadoop.HadoopNative;
 import io.prestosql.plugin.hive.HiveCompressionCodec;
+import io.prestosql.plugin.hive.benchmark.BenchmarkHiveFileFormatUtil.TestData;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
 import io.prestosql.spi.block.BlockBuilder;
@@ -502,44 +503,6 @@ public class BenchmarkHiveFileFormat
             }
         }
         return new TestData(columnNames, columnTypes, pages.build());
-    }
-
-    static class TestData
-    {
-        private final List<String> columnNames;
-        private final List<Type> columnTypes;
-
-        private final List<Page> pages;
-
-        private final int size;
-
-        public TestData(List<String> columnNames, List<Type> columnTypes, List<Page> pages)
-        {
-            this.columnNames = ImmutableList.copyOf(columnNames);
-            this.columnTypes = ImmutableList.copyOf(columnTypes);
-            this.pages = ImmutableList.copyOf(pages);
-            this.size = (int) pages.stream().mapToLong(Page::getSizeInBytes).sum();
-        }
-
-        public List<String> getColumnNames()
-        {
-            return columnNames;
-        }
-
-        public List<Type> getColumnTypes()
-        {
-            return columnTypes;
-        }
-
-        public List<Page> getPages()
-        {
-            return pages;
-        }
-
-        public int getSize()
-        {
-            return size;
-        }
     }
 
     private static Type getColumnType(TpchColumn<?> input)
