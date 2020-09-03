@@ -35,7 +35,7 @@ import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
-import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
+import static io.prestosql.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 

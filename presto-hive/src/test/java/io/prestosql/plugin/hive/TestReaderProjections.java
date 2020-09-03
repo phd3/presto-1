@@ -15,6 +15,7 @@ package io.prestosql.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.type.Type;
 import org.testng.annotations.Test;
 
@@ -23,8 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
-import static io.prestosql.plugin.hive.ReaderProjections.projectSufficientColumns;
+import static io.prestosql.plugin.hive.HivePageSourceProvider.projectBaseColumns;
+import static io.prestosql.plugin.hive.HivePageSourceProvider.projectSufficientColumns;
 import static io.prestosql.plugin.hive.TestHiveReaderProjectionsUtil.ROWTYPE_OF_PRIMITIVES;
 import static io.prestosql.plugin.hive.TestHiveReaderProjectionsUtil.ROWTYPE_OF_ROW_AND_PRIMITIVES;
 import static io.prestosql.plugin.hive.TestHiveReaderProjectionsUtil.createProjectedColumnHandle;
@@ -83,7 +84,7 @@ public class TestReaderProjections
         for (int i = 0; i < columns.size(); i++) {
             HiveColumnHandle column = columns.get(i);
             int readerIndex = mapping.get().readerColumnPositionForHiveColumnAt(i);
-            HiveColumnHandle readerColumn = mapping.get().readerColumnForHiveColumnAt(i);
+            ColumnHandle readerColumn = mapping.get().readerColumnForHiveColumnAt(i);
             assertEquals(column.getBaseColumn(), readerColumn);
             assertEquals(readerColumns.get(readerIndex), readerColumn);
         }

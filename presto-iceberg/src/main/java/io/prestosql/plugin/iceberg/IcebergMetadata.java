@@ -21,6 +21,7 @@ import io.airlift.slice.Slice;
 import io.prestosql.plugin.base.classloader.ClassLoaderSafeSystemTable;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.HiveApplyProjectionUtil;
 import io.prestosql.plugin.hive.HiveSchemaProperties;
 import io.prestosql.plugin.hive.HiveWrittenPartitions;
 import io.prestosql.plugin.hive.TableAlreadyExistsException;
@@ -30,6 +31,7 @@ import io.prestosql.plugin.hive.metastore.HiveMetastore;
 import io.prestosql.plugin.hive.metastore.HivePrincipal;
 import io.prestosql.plugin.hive.metastore.Table;
 import io.prestosql.spi.PrestoException;
+import io.prestosql.spi.connector.Assignment;
 import io.prestosql.spi.connector.CatalogSchemaName;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
@@ -44,16 +46,20 @@ import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.ConnectorTableProperties;
 import io.prestosql.spi.connector.Constraint;
 import io.prestosql.spi.connector.ConstraintApplicationResult;
+import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.connector.SchemaNotFoundException;
 import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.SystemTable;
 import io.prestosql.spi.connector.TableNotFoundException;
+import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.expression.Variable;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.PrestoPrincipal;
 import io.prestosql.spi.statistics.ComputedStatistics;
 import io.prestosql.spi.statistics.TableStatistics;
+import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.TypeManager;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.AppendFiles;
@@ -76,6 +82,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -83,10 +90,14 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
+import java.util.function.Function;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.prestosql.plugin.hive.HiveApplyProjectionUtil.extractSupportedProjectedColumns;
+import static io.prestosql.plugin.hive.HiveApplyProjectionUtil.replaceWithNewVariables;
 import static io.prestosql.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.prestosql.plugin.hive.util.HiveWriteUtils.getTableDefaultLocation;
 import static io.prestosql.plugin.iceberg.ExpressionConverter.toIcebergExpression;
@@ -606,6 +617,86 @@ public class IcebergMetadata
     public void rollback()
     {
         // TODO: cleanup open transaction
+    }
+
+    @Override
+    public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(
+            ConnectorSession session,
+            ConnectorTableHandle handle,
+            List<ConnectorExpression> projections,
+            Map<String, ColumnHandle> assignments)
+    {
+        // Create projected column representations for supported sub expressions. Simple column references and chain of
+        // dereferences on a variable are supported right now.
+        Set<ConnectorExpression> projectedExpressions = projections.stream()
+                .flatMap(expression -> extractSupportedProjectedColumns(expression).stream())
+                .collect(toImmutableSet());
+
+        Map<ConnectorExpression, HiveApplyProjectionUtil.ProjectedColumnRepresentation> projectedColumns = projectedExpressions.stream()
+                .collect(toImmutableMap(Function.identity(), HiveApplyProjectionUtil::createProjectedColumnRepresentation));
+
+        // No pushdown required if all references are simple variables
+        if (projectedColumns.values().stream().allMatch(HiveApplyProjectionUtil.ProjectedColumnRepresentation::isVariable)) {
+            return Optional.empty();
+        }
+
+        org.apache.iceberg.Table icebergTable = getIcebergTable(metastore, hdfsEnvironment, session, ((IcebergTableHandle) handle).getSchemaTableName());
+        Map<ConnectorExpression, IcebergColumnHandle> nestedFields = projectedColumns.entrySet().stream()
+                .collect(toImmutableMap(
+                        entry -> entry.getKey(),
+                        entry -> {
+                            HiveApplyProjectionUtil.ProjectedColumnRepresentation projectedColumn = entry.getValue();
+                            IcebergColumnHandle column = (IcebergColumnHandle) assignments.get(projectedColumn.getVariable().getName());
+
+                            ImmutableList.Builder<String> segments = ImmutableList.builder();
+                            segments.add(column.getName());
+
+                            io.prestosql.spi.type.Type type = column.getType();
+                            for (int i = 0; i < projectedColumn.getDereferenceIndices().size(); i++) {
+                                checkArgument(type instanceof RowType, "Expected type to be a RowType");
+                                int index = projectedColumn.getDereferenceIndices().get(i);
+                                RowType.Field field = ((RowType) type).getFields().get(index);
+                                segments.add(field.getName().get());
+                                type = field.getType();
+                            }
+
+                            String name = String.join(".", segments.build());
+                            int id = icebergTable.schema().findField(name).fieldId();
+                            return new IcebergColumnHandle(id, name, type, Optional.empty());
+                        }));
+
+        Map<String, Assignment> newAssignments = new HashMap<>();
+        ImmutableMap.Builder<ConnectorExpression, Variable> expressionToVariableMappings = ImmutableMap.builder();
+
+        for (Map.Entry<ConnectorExpression, IcebergColumnHandle> entry : nestedFields.entrySet()) {
+            ConnectorExpression expression = entry.getKey();
+            IcebergColumnHandle projectedColumn = entry.getValue();
+            String projectedColumnName = projectedColumn.getName().replace('.', '#');
+
+            Optional<String> existingColumn = assignments.entrySet().stream()
+                    .filter(assignment -> entry.getValue().getId() == ((IcebergColumnHandle) assignment.getValue()).getId())
+                    .map(Map.Entry::getKey)
+                    .findFirst();
+
+            if (existingColumn.isPresent()) {
+                projectedColumnName = existingColumn.get();
+                projectedColumn = (IcebergColumnHandle) assignments.get(projectedColumnName);
+            }
+
+            Variable projectedColumnVariable = new Variable(projectedColumnName, expression.getType());
+            Assignment newAssignment = new Assignment(projectedColumnName, projectedColumn, expression.getType());
+            newAssignments.put(projectedColumnName, newAssignment);
+
+            expressionToVariableMappings.put(expression, projectedColumnVariable);
+        }
+
+        // Modify projections to refer to new variables
+        List<ConnectorExpression> newProjections = projections.stream()
+                .map(expression -> replaceWithNewVariables(expression, expressionToVariableMappings.build()))
+                .collect(toImmutableList());
+
+        List<Assignment> outputAssignments = newAssignments.values().stream().collect(toImmutableList());
+        return Optional.of(new ProjectionApplicationResult<>(handle, newProjections, outputAssignments));
     }
 
     @Override

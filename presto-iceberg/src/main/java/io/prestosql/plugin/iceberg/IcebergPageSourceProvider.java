@@ -159,6 +159,9 @@ public class IcebergPageSourceProvider
                 .collect(toImmutableList());
 
         HdfsContext hdfsContext = new HdfsContext(session, table.getSchemaName(), table.getTableName());
+
+        Reader
+
         ConnectorPageSource dataPageSource = createDataPageSource(
                 session,
                 hdfsContext,

@@ -46,7 +46,7 @@ public class ReaderProjectionsAdapter
         ImmutableList.Builder<ChannelMapping> mappingBuilder = ImmutableList.builder();
 
         for (int i = 0; i < expectedHiveColumns.size(); i++) {
-            HiveColumnHandle projectedColumnHandle = readerProjections.readerColumnForHiveColumnAt(i);
+            HiveColumnHandle projectedColumnHandle = (HiveColumnHandle) readerProjections.readerColumnForHiveColumnAt(i);
             int inputChannel = readerProjections.readerColumnPositionForHiveColumnAt(i);
             ChannelMapping mapping = createChannelMapping(expectedHiveColumns.get(i), projectedColumnHandle, inputChannel);
             mappingBuilder.add(mapping);
