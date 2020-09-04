@@ -36,6 +36,9 @@ import io.prestosql.parquet.reader.ParquetReader;
 import io.prestosql.plugin.hive.FileFormatDataSourceStats;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.HivePageSourceFactory;
+import io.prestosql.plugin.hive.ReaderProjections;
+import io.prestosql.plugin.hive.ReaderProjectionsAdapter;
 import io.prestosql.plugin.hive.orc.HdfsOrcDataSource;
 import io.prestosql.plugin.hive.orc.OrcPageSource;
 import io.prestosql.plugin.hive.orc.OrcPageSource.ColumnAdaptation;
@@ -160,9 +163,7 @@ public class IcebergPageSourceProvider
 
         HdfsContext hdfsContext = new HdfsContext(session, table.getSchemaName(), table.getTableName());
 
-        Reader
-
-        ConnectorPageSource dataPageSource = createDataPageSource(
+        HivePageSourceFactory.ReaderPageSourceWithProjections readerWithProjections = createDataPageSource(
                 session,
                 hdfsContext,
                 new Path(split.getPath()),
@@ -172,10 +173,16 @@ public class IcebergPageSourceProvider
                 regularColumns,
                 table.getPredicate());
 
+        Optional<ReaderProjections> readerProjections = readerWithProjections.getProjectedReaderColumns();
+        Optional<ReaderProjectionsAdapter> adapter = Optional.empty();
+        if (readerProjections.isPresent()) {
+            adapter = Optional.of(new ReaderProjectionsAdapter(regularColumns, readerProjections.get()));
+        }
+
         return new IcebergPageSource(icebergColumns, partitionKeys, dataPageSource, session.getTimeZoneKey());
     }
 
-    private ConnectorPageSource createDataPageSource(
+    private HivePageSourceFactory.ReaderPageSourceWithProjections createDataPageSource(
             ConnectorSession session,
             HdfsContext hdfsContext,
             Path path,
@@ -233,7 +240,7 @@ public class IcebergPageSourceProvider
         throw new PrestoException(NOT_SUPPORTED, "File format not supported for Iceberg: " + fileFormat);
     }
 
-    private static ConnectorPageSource createOrcPageSource(
+    private static HivePageSourceFactory.ReaderPageSourceWithProjections createOrcPageSource(
             HdfsEnvironment hdfsEnvironment,
             String user,
             Configuration configuration,
@@ -342,7 +349,7 @@ public class IcebergPageSourceProvider
         }
     }
 
-    private static ConnectorPageSource createParquetPageSource(
+    private static HivePageSourceFactory.ReaderPageSourceWithProjections createParquetPageSource(
             HdfsEnvironment hdfsEnvironment,
             String user,
             Configuration configuration,

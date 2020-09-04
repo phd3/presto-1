@@ -21,6 +21,7 @@ import io.prestosql.spi.block.BlockBuilder;
 import io.prestosql.spi.block.ColumnarRow;
 import io.prestosql.spi.block.LazyBlock;
 import io.prestosql.spi.block.LazyBlockLoader;
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.type.Type;
 
 import java.util.List;
@@ -38,7 +39,7 @@ public class ReaderProjectionsAdapter
     private final List<Type> outputTypes;
     private final List<Type> inputTypes;
 
-    public ReaderProjectionsAdapter(List<HiveColumnHandle> expectedHiveColumns, ReaderProjections readerProjections)
+    public ReaderProjectionsAdapter(List<ColumnHandle> expectedHiveColumns, ReaderProjections readerProjections)
     {
         requireNonNull(expectedHiveColumns, "expectedHiveColumns is null");
         requireNonNull(readerProjections, "readerProjections is null");
