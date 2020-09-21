@@ -13,12 +13,17 @@
  */
 package io.prestosql.plugin.iceberg;
 
+import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceUtf8;
+import io.prestosql.plugin.hive.ReaderColumns;
+import io.prestosql.plugin.hive.ReaderPageSource;
+import io.prestosql.plugin.hive.ReaderProjectionsAdapter;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.RunLengthEncodedBlock;
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorPageSource;
 import io.prestosql.spi.predicate.Utils;
 import io.prestosql.spi.type.DecimalType;
@@ -34,8 +39,11 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.plugin.iceberg.IcebergErrorCode.ICEBERG_BAD_DATA;
 import static io.prestosql.plugin.iceberg.IcebergErrorCode.ICEBERG_INVALID_PARTITION_VALUE;
@@ -67,16 +75,25 @@ public class IcebergPageSource
     private final Block[] prefilledBlocks;
     private final int[] delegateIndexes;
     private final ConnectorPageSource delegate;
+    private final Optional<ReaderProjectionsAdapter> projectionsAdapter;
 
     public IcebergPageSource(
             List<IcebergColumnHandle> columns,
             Map<Integer, String> partitionKeys,
-            ConnectorPageSource delegate,
+            ReaderPageSource readerPageSource,
             TimeZoneKey timeZoneKey)
     {
         int size = requireNonNull(columns, "columns is null").size();
         requireNonNull(partitionKeys, "partitionKeys is null");
-        this.delegate = requireNonNull(delegate, "delegate is null");
+
+        requireNonNull(readerPageSource, "readerPageSource is null");
+        this.delegate = requireNonNull(readerPageSource.get(), "delegate reader is null");
+        Optional<ReaderColumns> projections = readerPageSource.getColumns();
+        this.projectionsAdapter = projections.map(value -> new ReaderProjectionsAdapter(
+                columns.stream().map(ColumnHandle.class::cast).collect(toImmutableList()),
+                value,
+                column -> ((IcebergColumnHandle) column).getType(),
+                IcebergPageSource::getProjections));
 
         this.prefilledBlocks = new Block[size];
         this.delegateIndexes = new int[size];
@@ -125,6 +142,11 @@ public class IcebergPageSource
             if (dataPage == null) {
                 return null;
             }
+
+            if (projectionsAdapter.isPresent()) {
+                dataPage = projectionsAdapter.get().adaptPage(dataPage);
+            }
+
             int batchSize = dataPage.getPositionCount();
             Block[] blocks = new Block[prefilledBlocks.length];
             for (int i = 0; i < prefilledBlocks.length; i++) {
@@ -252,5 +274,26 @@ public class IcebergPageSource
         }
         // Iceberg tables don't partition by non-primitive-type columns.
         throw new PrestoException(GENERIC_INTERNAL_ERROR, "Invalid partition type " + type.toString());
+    }
+
+    private static List<Integer> getProjections(ColumnHandle required, ColumnHandle read)
+    {
+        IcebergColumnHandle requiredColumn = (IcebergColumnHandle) required;
+        IcebergColumnHandle readColumn = (IcebergColumnHandle) read;
+
+        checkArgument(requiredColumn.getBaseColumn().equals(readColumn.getBaseColumn()), "reader column is not valid for expected column");
+
+        List<Integer> expectedDereferences = requiredColumn.getProjection()
+                .map(IcebergColumnHandle.Projection::getFieldPositions)
+                .orElse(ImmutableList.of());
+
+        List<Integer> readerDereferences = readColumn.getProjection()
+                .map(IcebergColumnHandle.Projection::getFieldPositions)
+                .orElse(ImmutableList.of());
+
+        checkArgument(readerDereferences.size() <= expectedDereferences.size(), "Field returned by the reader should include expected field");
+        checkArgument(expectedDereferences.subList(0, readerDereferences.size()).equals(readerDereferences), "Field returned by the reader should be a prefix of expected field");
+
+        return expectedDereferences.subList(readerDereferences.size(), expectedDereferences.size());
     }
 }
