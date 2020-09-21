@@ -30,7 +30,8 @@ import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HiveConfig;
 import io.prestosql.plugin.hive.HivePageSourceFactory;
-import io.prestosql.plugin.hive.ReaderProjections;
+import io.prestosql.plugin.hive.ReaderColumns;
+import io.prestosql.plugin.hive.ReaderPageSource;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorPageSource;
 import io.prestosql.spi.connector.ConnectorSession;
@@ -76,16 +77,17 @@ import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_MISSING_DATA;
+import static io.prestosql.plugin.hive.HivePageSourceProvider.projectBaseColumns;
+import static io.prestosql.plugin.hive.HivePageSourceProvider.projectSufficientColumns;
 import static io.prestosql.plugin.hive.HiveSessionProperties.getParquetMaxReadBlockSize;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isFailOnCorruptedParquetStatistics;
 import static io.prestosql.plugin.hive.HiveSessionProperties.isUseParquetColumnNames;
-import static io.prestosql.plugin.hive.ReaderProjections.projectBaseColumns;
-import static io.prestosql.plugin.hive.ReaderProjections.projectSufficientColumns;
 import static io.prestosql.plugin.hive.parquet.HdfsParquetDataSource.buildHdfsParquetDataSource;
 import static io.prestosql.plugin.hive.parquet.ParquetColumnIOConverter.constructField;
 import static io.prestosql.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toUnmodifiableList;
 import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category.PRIMITIVE;
 
 public class ParquetPageSourceFactory
@@ -113,7 +115,7 @@ public class ParquetPageSourceFactory
     }
 
     @Override
-    public Optional<ReaderPageSourceWithProjections> createPageSource(
+    public Optional<ReaderPageSource> createPageSource(
             Configuration configuration,
             ConnectorSession session,
             Path path,
@@ -151,7 +153,7 @@ public class ParquetPageSourceFactory
     /**
      * This method is available for other callers to use directly.
      */
-    public static ReaderPageSourceWithProjections createPageSource(
+    public static ReaderPageSource createPageSource(
             Path path,
             long start,
             long length,
@@ -183,7 +185,8 @@ public class ParquetPageSourceFactory
             dataSource = buildHdfsParquetDataSource(inputStream, path, fileSize, stats, options);
 
             Optional<MessageType> message = projectSufficientColumns(columns)
-                    .map(ReaderProjections::getReaderColumns)
+                    .map(projection -> projection.get().stream()
+                            .map(HiveColumnHandle.class::cast).collect(toUnmodifiableList()))
                     .orElse(columns).stream()
                     .filter(column -> column.getColumnType() == REGULAR)
                     .map(column -> getColumnType(column, fileSchema, useColumnNames))
@@ -247,8 +250,12 @@ public class ParquetPageSourceFactory
             throw new PrestoException(HIVE_CANNOT_OPEN_SPLIT, message, e);
         }
 
-        Optional<ReaderProjections> readerProjections = projectBaseColumns(columns);
-        List<HiveColumnHandle> baseColumns = readerProjections.map(ReaderProjections::getReaderColumns).orElse(columns);
+        Optional<ReaderColumns> readerProjections = projectBaseColumns(columns);
+        List<HiveColumnHandle> baseColumns = readerProjections.map(projection ->
+                projection.get().stream()
+                        .map(HiveColumnHandle.class::cast)
+                        .collect(toUnmodifiableList()))
+                .orElse(columns);
         for (HiveColumnHandle column : baseColumns) {
             checkArgument(column.getColumnType() == REGULAR, "column type must be REGULAR: %s", column);
         }
@@ -272,7 +279,7 @@ public class ParquetPageSourceFactory
         }
 
         ConnectorPageSource parquetPageSource = new ParquetPageSource(parquetReader, prestoTypes.build(), internalFields.build());
-        return new ReaderPageSourceWithProjections(parquetPageSource, readerProjections);
+        return new ReaderPageSource(parquetPageSource, readerProjections);
     }
 
     public static Optional<org.apache.parquet.schema.Type> getParquetType(GroupType groupType, boolean useParquetColumnNames, HiveColumnHandle column)
