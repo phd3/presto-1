@@ -70,7 +70,8 @@ final class IcebergUtil
                         column.fieldId(),
                         column.name(),
                         toPrestoType(column.type(), typeManager),
-                        Optional.ofNullable(column.doc())))
+                        Optional.ofNullable(column.doc()),
+                        Optional.empty()))
                 .collect(toImmutableList());
     }
 

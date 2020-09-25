@@ -37,6 +37,8 @@ import io.prestosql.parquet.reader.ParquetReader;
 import io.prestosql.plugin.hive.FileFormatDataSourceStats;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.ReaderColumns;
+import io.prestosql.plugin.hive.ReaderPageSource;
 import io.prestosql.plugin.hive.orc.HdfsOrcDataSource;
 import io.prestosql.plugin.hive.orc.OrcPageSource;
 import io.prestosql.plugin.hive.orc.OrcPageSource.ColumnAdaptation;
@@ -74,6 +76,7 @@ import javax.inject.Inject;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -160,7 +163,7 @@ public class IcebergPageSourceProvider
                 .collect(toImmutableList());
 
         HdfsContext hdfsContext = new HdfsContext(session, table.getSchemaName(), table.getTableName());
-        ConnectorPageSource dataPageSource = createDataPageSource(
+        ReaderPageSource dataPageSource = createDataPageSource(
                 session,
                 hdfsContext,
                 new Path(split.getPath()),
@@ -173,7 +176,7 @@ public class IcebergPageSourceProvider
         return new IcebergPageSource(icebergColumns, partitionKeys, dataPageSource, session.getTimeZoneKey());
     }
 
-    private ConnectorPageSource createDataPageSource(
+    private ReaderPageSource createDataPageSource(
             ConnectorSession session,
             HdfsContext hdfsContext,
             Path path,
@@ -193,6 +196,7 @@ public class IcebergPageSourceProvider
                     throw new PrestoException(ICEBERG_FILESYSTEM_ERROR, e);
                 }
                 long fileSize = fileStatus.getLen();
+
                 return createOrcPageSource(
                         hdfsEnvironment,
                         session.getUser(),
@@ -231,7 +235,7 @@ public class IcebergPageSourceProvider
         throw new PrestoException(NOT_SUPPORTED, "File format not supported for Iceberg: " + fileFormat);
     }
 
-    private static ConnectorPageSource createOrcPageSource(
+    private static ReaderPageSource createOrcPageSource(
             HdfsEnvironment hdfsEnvironment,
             String user,
             Configuration configuration,
@@ -239,11 +243,26 @@ public class IcebergPageSourceProvider
             long start,
             long length,
             long fileSize,
-            List<IcebergColumnHandle> columns,
+            List<IcebergColumnHandle> requiredColumns,
             TupleDomain<IcebergColumnHandle> effectivePredicate,
             OrcReaderOptions options,
             FileFormatDataSourceStats stats)
     {
+        Optional<ReaderColumns> baseColumns = projectBaseColumns(requiredColumns);
+
+        List<IcebergColumnHandle> columns;
+        if (baseColumns.isEmpty()) {
+            columns = requiredColumns;
+        }
+        else {
+            columns = baseColumns.get().get().stream()
+                    .map(IcebergColumnHandle.class::cast)
+                    .collect(toImmutableList());
+        }
+
+        // Ignore predicates on projected columns for now
+        effectivePredicate = effectivePredicate.filter((column, domain) -> column.identityProjection());
+
         OrcDataSource orcDataSource = null;
         try {
             FileSystem fileSystem = hdfsEnvironment.getFileSystem(user, path, configuration);
@@ -275,8 +294,10 @@ public class IcebergPageSourceProvider
             List<OrcColumn> fileReadColumns = new ArrayList<>(columns.size());
             List<Type> fileReadTypes = new ArrayList<>(columns.size());
             List<ColumnAdaptation> columnAdaptations = new ArrayList<>(columns.size());
+
             for (IcebergColumnHandle column : columns) {
                 OrcColumn orcColumn;
+
                 if (fileColumnsByIcebergId.isEmpty()) {
                     orcColumn = fileColumnsByName.get(column.getName().toLowerCase(ENGLISH));
                 }
@@ -313,14 +334,16 @@ public class IcebergPageSourceProvider
                     INITIAL_BATCH_SIZE,
                     exception -> handleException(orcDataSourceId, exception));
 
-            return new OrcPageSource(
-                    recordReader,
-                    columnAdaptations,
-                    orcDataSource,
-                    Optional.empty(),
-                    Optional.empty(),
-                    systemMemoryUsage,
-                    stats);
+            return new ReaderPageSource(
+                    new OrcPageSource(
+                        recordReader,
+                        columnAdaptations,
+                        orcDataSource,
+                        Optional.empty(),
+                        Optional.empty(),
+                        systemMemoryUsage,
+                        stats),
+                    baseColumns);
         }
         catch (Exception e) {
             if (orcDataSource != null) {
@@ -341,18 +364,30 @@ public class IcebergPageSourceProvider
         }
     }
 
-    private static ConnectorPageSource createParquetPageSource(
+    private static ReaderPageSource createParquetPageSource(
             HdfsEnvironment hdfsEnvironment,
             String user,
             Configuration configuration,
             Path path,
             long start,
             long length,
-            List<IcebergColumnHandle> regularColumns,
+            List<IcebergColumnHandle> requiredRegularColumns,
             ParquetReaderOptions options,
             TupleDomain<IcebergColumnHandle> effectivePredicate,
             FileFormatDataSourceStats fileFormatDataSourceStats)
     {
+        Optional<ReaderColumns> baseColumns = projectBaseColumns(requiredRegularColumns);
+
+        List<IcebergColumnHandle> regularColumns = requiredRegularColumns;
+        if (baseColumns.isPresent()) {
+            regularColumns = baseColumns.get().get().stream()
+                    .map(IcebergColumnHandle.class::cast)
+                    .collect(toImmutableList());
+        }
+
+        // Ignore predicates on partial columns for now.
+        effectivePredicate = effectivePredicate.filter((column, domain) -> column.identityProjection());
+
         AggregatedMemoryContext systemMemoryContext = newSimpleAggregatedMemoryContext();
 
         ParquetDataSource dataSource = null;
@@ -424,7 +459,9 @@ public class IcebergPageSourceProvider
                 }
             }
 
-            return new ParquetPageSource(parquetReader, prestoTypes.build(), internalFields.build());
+            return new ReaderPageSource(
+                    new ParquetPageSource(parquetReader, prestoTypes.build(), internalFields.build()),
+                    baseColumns);
         }
         catch (IOException | RuntimeException e) {
             try {
@@ -448,6 +485,38 @@ public class IcebergPageSourceProvider
             }
             throw new PrestoException(ICEBERG_CANNOT_OPEN_SPLIT, message, e);
         }
+    }
+
+    private static Optional<ReaderColumns> projectBaseColumns(List<IcebergColumnHandle> columns)
+    {
+        requireNonNull(columns, "columns is null");
+
+        // No projection is required if all columns are base columns
+        if (columns.stream().allMatch(IcebergColumnHandle::identityProjection)) {
+            return Optional.empty();
+        }
+
+        ImmutableList.Builder<ColumnHandle> projectedColumns = ImmutableList.builder();
+        ImmutableList.Builder<Integer> outputColumnMapping = ImmutableList.builder();
+        Map<Integer, Integer> mappedIcebergIds = new HashMap<>();
+        int projectedColumnCount = 0;
+
+        for (IcebergColumnHandle column : columns) {
+            int baseId = column.getBaseId();
+            Integer mapped = mappedIcebergIds.get(baseId);
+
+            if (mapped == null) {
+                projectedColumns.add(column.getBaseColumn());
+                mappedIcebergIds.put(baseId, projectedColumnCount);
+                outputColumnMapping.add(projectedColumnCount);
+                projectedColumnCount++;
+            }
+            else {
+                outputColumnMapping.add(mapped);
+            }
+        }
+
+        return Optional.of(new ReaderColumns(projectedColumns.build(), outputColumnMapping.build()));
     }
 
     private static TupleDomain<ColumnDescriptor> getParquetTupleDomain(Map<List<String>, RichColumnDescriptor> descriptorsByPath, TupleDomain<IcebergColumnHandle> effectivePredicate)
