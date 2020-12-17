@@ -34,6 +34,7 @@ import static io.trino.tests.utils.QueryExecutors.connectToPresto;
 import static io.trino.tests.utils.QueryExecutors.onHive;
 import static io.trino.tests.utils.QueryExecutors.onPresto;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
 @Requires({
@@ -232,6 +233,54 @@ public class TestHiveViews
     }
 
     @Test(groups = HIVE_VIEWS)
+    public void testFailingHiveViewsForInformationSchema()
+    {
+        // The expected behavior is different across hive versions. For hive 3, the call "getTableNamesByType" is
+        // used in ThriftHiveMetastore#getAllViews. For older versions, the fallback to doGetTablesWithParameter
+        // is used, so information_schema.views does not include translated Hive views.
+
+        onHive().executeQuery("DROP SCHEMA IF EXISTS test_list_failing_views CASCADE");
+        onHive().executeQuery("CREATE SCHEMA test_list_failing_views");
+        onHive().executeQuery("CREATE VIEW test_list_failing_views.correct_view AS SELECT * FROM nation limit 5");
+
+        // Create a view for which the translation is guaranteed to fail
+        onPresto().executeQuery("CREATE TABLE test_list_failing_views.table_dropped (col0 BIGINT)");
+        onHive().executeQuery("CREATE VIEW test_list_failing_views.failing_view AS SELECT * FROM test_list_failing_views.table_dropped");
+        onPresto().executeQuery("DROP TABLE test_list_failing_views.table_dropped");
+
+        runQueryWithAssertion(
+                "SELECT table_name FROM information_schema.views WHERE table_schema = 'test_list_failing_views'",
+                getHiveVersionMajor() == 3
+                        ? queryAssert -> queryAssert.containsOnly(row("correct_view"))
+                        : QueryAssert::hasNoRows);
+
+        runQueryWithAssertion("SELECT table_name FROM information_schema.views",
+                getHiveVersionMajor() == 3
+                        ? queryAssert -> queryAssert.contains(row("correct_view"))
+                        : queryAssert -> assertThatThrownBy(() -> queryAssert.contains(row("correct_view"))));
+
+        assertThat(query("SELECT table_name FROM information_schema.views WHERE table_schema = 'test_list_failing_views' and table_name = 'correct_view'"))
+                .containsOnly(row("correct_view"));
+
+        // Listing fails when metadata for the problematic view is queried specifically
+        assertThatThrownBy(() -> query("SELECT table_name FROM information_schema.views WHERE table_schema = 'test_list_failing_views' and table_name = 'failing_view'"))
+                .hasMessageContaining("Failed to translate Hive view 'test_list_failing_views.failing_view'");
+
+        // Queries on information_schema.columns also trigger ConnectorMetadata#getViews. Columns from failing_view are
+        // listed too since HiveMetadata#listTableColumns does not ignore views.
+        assertThat(query("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'test_list_failing_views'"))
+                .containsOnly(
+                        row("correct_view", "n_nationkey"),
+                        row("correct_view", "n_name"),
+                        row("correct_view", "n_regionkey"),
+                        row("correct_view", "n_comment"),
+                        row("failing_view", "col0"));
+
+        assertThatThrownBy(() -> query("SELECT * FROM information_schema.columns WHERE table_schema = 'test_list_failing_views' AND table_name = 'failing_view'"))
+                .hasMessageContaining("Failed to translate Hive view 'test_list_failing_views.failing_view'");
+    }
+
+    @Test(groups = HIVE_VIEWS)
     public void testHiveViewWithParametrizedTypes()
     {
         onHive().executeQuery("DROP VIEW IF EXISTS hive_view_parametrized");
@@ -299,6 +348,11 @@ public class TestHiveViews
     {
         // Ensure Hive and Presto view compatibility by comparing the results
         assertion.accept(assertThat(onHive().executeQuery(query)));
+        assertion.accept(assertThat(onPresto().executeQuery(query)));
+    }
+
+    private static void runQueryWithAssertion(String query, Consumer<QueryAssert> assertion)
+    {
         assertion.accept(assertThat(onPresto().executeQuery(query)));
     }
 
