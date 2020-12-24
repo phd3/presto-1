@@ -50,8 +50,8 @@ public class TestHiveViews
         onHive().executeQuery("DROP VIEW IF EXISTS hive_test_view");
         onHive().executeQuery("CREATE VIEW hive_test_view AS SELECT * FROM nation");
 
-        assertViewQuery("SELECT * FROM hive_test_view", queryAssert -> queryAssert.hasRowsCount(25));
-        assertViewQuery(
+        assertOnPrestoAndHive("SELECT * FROM hive_test_view", queryAssert -> queryAssert.hasRowsCount(25));
+        assertOnPrestoAndHive(
                 "SELECT n_nationkey, n_name, n_regionkey, n_comment FROM hive_test_view WHERE n_nationkey < 3",
                 queryAssert -> queryAssert.containsOnly(
                         row(0, "ALGERIA", 0, " haggle. carefully final deposits detect slyly agai"),
@@ -69,7 +69,7 @@ public class TestHiveViews
                         // no schema is specified in purpose
                         "nation");
 
-        assertViewQuery("SELECT * FROM test_schema.hive_test_view_1", queryAssert -> queryAssert.hasRowsCount(25));
+        assertOnPrestoAndHive("SELECT * FROM test_schema.hive_test_view_1", queryAssert -> queryAssert.hasRowsCount(25));
     }
 
     @Test(groups = HIVE_VIEWS)
@@ -144,7 +144,7 @@ public class TestHiveViews
         onHive().executeQuery("DROP VIEW IF EXISTS hive_lateral_view");
         onHive().executeQuery("CREATE VIEW hive_lateral_view as SELECT pageid, adid FROM pageAds LATERAL VIEW explode(adid_list) adTable AS adid");
 
-        assertViewQuery(
+        assertOnPrestoAndHive(
                 "SELECT * FROM hive_lateral_view",
                 queryAssert -> queryAssert.containsOnly(
                         row("two", 11),
@@ -177,7 +177,7 @@ public class TestHiveViews
                 "FROM `default`.`nation` AS `n` \n" +
                 // join, subquery
                 "LEFT JOIN (SELECT * FROM orders WHERE o_custkey > 1000) `o` ON `o`.`o_orderkey` = `n`.`n_nationkey` ");
-        assertViewQuery("" +
+        assertOnPrestoAndHive("" +
                         "SELECT" +
                         "   n_nationkey, n_name, region_between_1_2, starts_with_a, not_peru, contains_n, is_something, coalesced_name," +
                         "   rounded_tan, the_orderdate, arithmetic " +
@@ -201,7 +201,7 @@ public class TestHiveViews
         onHive().executeQuery("DROP VIEW IF EXISTS view_on_identifiers_starting_with_numbers");
         onHive().executeQuery("CREATE VIEW view_on_identifiers_starting_with_numbers AS SELECT * FROM 7_table_with_number");
 
-        assertViewQuery(
+        assertOnPrestoAndHive(
                 "SELECT * FROM view_on_identifiers_starting_with_numbers",
                 queryAssert -> queryAssert.contains(row("abc")));
     }
@@ -248,13 +248,13 @@ public class TestHiveViews
         onHive().executeQuery("CREATE VIEW test_list_failing_views.failing_view AS SELECT * FROM test_list_failing_views.table_dropped");
         onPresto().executeQuery("DROP TABLE test_list_failing_views.table_dropped");
 
-        runQueryWithAssertion(
+        assertOnPresto(
                 "SELECT table_name FROM information_schema.views WHERE table_schema = 'test_list_failing_views'",
                 getHiveVersionMajor() == 3
                         ? queryAssert -> queryAssert.containsOnly(row("correct_view"))
                         : QueryAssert::hasNoRows);
 
-        runQueryWithAssertion("SELECT table_name FROM information_schema.views",
+        assertOnPresto("SELECT table_name FROM information_schema.views",
                 getHiveVersionMajor() == 3
                         ? queryAssert -> queryAssert.contains(row("correct_view"))
                         : queryAssert -> assertThatThrownBy(() -> queryAssert.contains(row("correct_view"))));
@@ -290,7 +290,7 @@ public class TestHiveViews
         onHive().executeQuery("CREATE VIEW hive_view_parametrized AS SELECT * FROM hive_table_parametrized");
         onHive().executeQuery("INSERT INTO TABLE hive_table_parametrized VALUES (1.2345, 42, 'bar')");
 
-        assertViewQuery(
+        assertOnPrestoAndHive(
                 "SELECT * FROM hive_view_parametrized",
                 queryAssert -> queryAssert.containsOnly(row(new BigDecimal("1.2345"), 42, "bar")));
 
@@ -310,7 +310,7 @@ public class TestHiveViews
         onHive().executeQuery("CREATE VIEW hive_zero_index_view AS SELECT array('presto','hive')[1] AS sql_dialect FROM hive_table_dummy");
         onHive().executeQuery("INSERT INTO TABLE hive_table_dummy VALUES (1)");
 
-        assertViewQuery(
+        assertOnPrestoAndHive(
                 "SELECT * FROM hive_zero_index_view",
                 queryAssert -> queryAssert.containsOnly(row("hive")));
     }
@@ -326,7 +326,7 @@ public class TestHiveViews
         onHive().executeQuery("CREATE VIEW nested_middle_view AS SELECT n, c FROM nested_base_view WHERE k = 14");
         onHive().executeQuery("CREATE VIEW nested_top_view AS SELECT n AS n_renamed FROM nested_middle_view");
 
-        assertViewQuery(
+        assertOnPrestoAndHive(
                 "SELECT n_renamed FROM nested_top_view",
                 queryAssert -> queryAssert.containsOnly(row("KENYA")));
     }
@@ -344,14 +344,14 @@ public class TestHiveViews
                 .containsExactly(row(1L));
     }
 
-    private static void assertViewQuery(String query, Consumer<QueryAssert> assertion)
+    private static void assertOnPrestoAndHive(String query, Consumer<QueryAssert> assertion)
     {
         // Ensure Hive and Presto view compatibility by comparing the results
         assertion.accept(assertThat(onHive().executeQuery(query)));
         assertion.accept(assertThat(onPresto().executeQuery(query)));
     }
 
-    private static void runQueryWithAssertion(String query, Consumer<QueryAssert> assertion)
+    private static void assertOnPresto(String query, Consumer<QueryAssert> assertion)
     {
         assertion.accept(assertThat(onPresto().executeQuery(query)));
     }
