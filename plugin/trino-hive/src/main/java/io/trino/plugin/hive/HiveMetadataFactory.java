@@ -43,12 +43,12 @@ public class HiveMetadataFactory
     private final boolean skipTargetCleanupOnRollback;
     private final boolean writesToNonManagedTablesEnabled;
     private final boolean createsOfNonManagedTablesEnabled;
-    private final boolean translateHiveViews;
     private final boolean hideDeltaLakeTables;
     private final long perTransactionCacheMaximumSize;
     private final HiveMetastore metastore;
     private final HdfsEnvironment hdfsEnvironment;
     private final HivePartitionManager partitionManager;
+    private final HiveViewCodec hiveViewCodec;
     private final TypeManager typeManager;
     private final LocationService locationService;
     private final JsonCodec<PartitionUpdate> partitionUpdateCodec;
@@ -69,6 +69,7 @@ public class HiveMetadataFactory
             HiveMetastore metastore,
             HdfsEnvironment hdfsEnvironment,
             HivePartitionManager partitionManager,
+            HiveViewCodec hiveViewCodec,
             ExecutorService executorService,
             @ForHiveTransactionHeartbeats ScheduledExecutorService heartbeatService,
             TypeManager typeManager,
@@ -81,7 +82,7 @@ public class HiveMetadataFactory
                 catalogName,
                 metastore,
                 hdfsEnvironment,
-                partitionManager,
+                partitionManager, hiveViewCodec,
                 hiveConfig.getMaxConcurrentFileRenames(),
                 hiveConfig.getMaxConcurrentMetastoreDrops(),
                 hiveConfig.getMaxConcurrentMetastoreUpdates(),
@@ -89,7 +90,6 @@ public class HiveMetadataFactory
                 hiveConfig.isSkipTargetCleanupOnRollback(),
                 hiveConfig.getWritesToNonManagedTablesEnabled(),
                 hiveConfig.getCreatesOfNonManagedTablesEnabled(),
-                hiveConfig.isTranslateHiveViews(),
                 hiveConfig.getPerTransactionMetastoreCacheMaximumSize(),
                 hiveConfig.getHiveTransactionHeartbeatInterval(),
                 metastoreConfig.isHideDeltaLakeTables(),
@@ -107,6 +107,7 @@ public class HiveMetadataFactory
             HiveMetastore metastore,
             HdfsEnvironment hdfsEnvironment,
             HivePartitionManager partitionManager,
+            HiveViewCodec hiveViewCodec,
             int maxConcurrentFileRenames,
             int maxConcurrentMetastoreDrops,
             int maxConcurrentMetastoreUpdates,
@@ -114,7 +115,6 @@ public class HiveMetadataFactory
             boolean skipTargetCleanupOnRollback,
             boolean writesToNonManagedTablesEnabled,
             boolean createsOfNonManagedTablesEnabled,
-            boolean translateHiveViews,
             long perTransactionCacheMaximumSize,
             Optional<Duration> hiveTransactionHeartbeatInterval,
             boolean hideDeltaLakeTables,
@@ -131,13 +131,13 @@ public class HiveMetadataFactory
         this.skipTargetCleanupOnRollback = skipTargetCleanupOnRollback;
         this.writesToNonManagedTablesEnabled = writesToNonManagedTablesEnabled;
         this.createsOfNonManagedTablesEnabled = createsOfNonManagedTablesEnabled;
-        this.translateHiveViews = translateHiveViews;
         this.hideDeltaLakeTables = hideDeltaLakeTables;
         this.perTransactionCacheMaximumSize = perTransactionCacheMaximumSize;
 
         this.metastore = requireNonNull(metastore, "metastore is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.partitionManager = requireNonNull(partitionManager, "partitionManager is null");
+        this.hiveViewCodec = requireNonNull(hiveViewCodec, "hiveViewCodec is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.locationService = requireNonNull(locationService, "locationService is null");
         this.partitionUpdateCodec = requireNonNull(partitionUpdateCodec, "partitionUpdateCodec is null");
@@ -163,6 +163,7 @@ public class HiveMetadataFactory
         SemiTransactionalHiveMetastore metastore = new SemiTransactionalHiveMetastore(
                 hdfsEnvironment,
                 new HiveMetastoreClosure(memoizeMetastore(this.metastore, perTransactionCacheMaximumSize)), // per-transaction cache
+                hiveViewCodec,
                 renameExecution,
                 dropExecutor,
                 updateExecutor,
@@ -175,10 +176,9 @@ public class HiveMetadataFactory
                 catalogName,
                 metastore,
                 hdfsEnvironment,
-                partitionManager,
+                partitionManager, hiveViewCodec,
                 writesToNonManagedTablesEnabled,
                 createsOfNonManagedTablesEnabled,
-                translateHiveViews,
                 hideDeltaLakeTables,
                 typeManager,
                 locationService,

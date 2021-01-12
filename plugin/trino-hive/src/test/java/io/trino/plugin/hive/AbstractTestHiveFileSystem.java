@@ -184,10 +184,12 @@ public abstract class AbstractTestHiveFileSystem
 
         hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, new HdfsConfig(), new NoHdfsAuthentication());
         MetastoreConfig metastoreConfig = new MetastoreConfig();
+        HiveConfig hiveConfig = new HiveConfig();
         metastoreClient = new TestingHiveMetastore(
                 new BridgingHiveMetastore(new ThriftHiveMetastore(
                         metastoreLocator,
-                        new HiveConfig(),
+                        new HiveViewCodec(hiveConfig),
+                        hiveConfig,
                         metastoreConfig,
                         new ThriftMetastoreConfig(),
                         hdfsEnvironment,
@@ -204,6 +206,7 @@ public abstract class AbstractTestHiveFileSystem
                 metastoreClient,
                 hdfsEnvironment,
                 hivePartitionManager,
+                new HiveViewCodec(config),
                 newDirectExecutorService(),
                 heartbeatService,
                 TYPE_MANAGER,
