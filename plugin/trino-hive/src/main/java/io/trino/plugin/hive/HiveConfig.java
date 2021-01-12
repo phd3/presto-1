@@ -126,6 +126,8 @@ public class HiveConfig
     private Duration fileStatusCacheExpireAfterWrite = new Duration(1, MINUTES);
     private long fileStatusCacheMaxSize = 1000 * 1000;
     private List<String> fileStatusCacheTables = ImmutableList.of();
+
+    private Optional<String> alternateViewCodecTag = Optional.empty();
     private boolean translateHiveViews;
 
     private Optional<Duration> hiveTransactionHeartbeatInterval = Optional.empty();
@@ -684,6 +686,20 @@ public class HiveConfig
     public HiveConfig setFileStatusCacheTables(String fileStatusCacheTables)
     {
         this.fileStatusCacheTables = SPLITTER.splitToList(fileStatusCacheTables);
+        return this;
+    }
+
+    public Optional<String> getAlternateViewCodecTag()
+    {
+        return alternateViewCodecTag;
+    }
+
+    @Deprecated
+    @Config("hive.alternate-view-codec-tag")
+    @ConfigDescription("Enable reading views with encoded with a tag other than Trino")
+    public HiveConfig setAlternateViewCodecTag(String alternateViewCodecTag)
+    {
+        this.alternateViewCodecTag = Optional.ofNullable(alternateViewCodecTag);
         return this;
     }
 
