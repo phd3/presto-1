@@ -31,6 +31,7 @@ import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnsMetadata;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorOutputMetadata;
@@ -194,7 +195,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public Map<QualifiedObjectName, List<ColumnMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
+    public Map<CatalogName, List<ColumnsMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
     {
         throw new UnsupportedOperationException();
     }
@@ -853,5 +854,12 @@ public abstract class AbstractMockMetadata
     public Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public QualifiedObjectName redirectTable(Session session, QualifiedObjectName tableName)
+    {
+        // no-op
+        return tableName;
     }
 }

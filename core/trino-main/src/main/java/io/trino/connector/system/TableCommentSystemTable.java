@@ -105,8 +105,9 @@ public class TableCommentSystemTable
             }
 
             for (SchemaTableName name : names) {
-                QualifiedObjectName tableName = new QualifiedObjectName(prefix.getCatalogName(), name.getSchemaName(), name.getTableName());
+                QualifiedObjectName tableName = metadata.redirectTable(session, new QualifiedObjectName(prefix.getCatalogName(), name.getSchemaName(), name.getTableName()));
                 Optional<String> comment = Optional.empty();
+
                 try {
                     comment = metadata.getTableHandle(session, tableName)
                             .map(handle -> metadata.getTableMetadata(session, handle))

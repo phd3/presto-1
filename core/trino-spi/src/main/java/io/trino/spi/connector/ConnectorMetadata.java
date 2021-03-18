@@ -36,14 +36,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
-import static java.util.Collections.emptyMap;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toMap;
 
 public interface ConnectorMetadata
 {
@@ -220,7 +220,16 @@ public interface ConnectorMetadata
      */
     default Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
     {
-        return emptyMap();
+        return listTableColumnsStream(session, prefix)
+                .collect(toMap(ColumnsMetadata::getTable, ColumnsMetadata::doGetColumns));
+    }
+
+    /**
+     * Gets the metadata for all columns that match the specified table prefix - as a stream.
+     */
+    default Stream<ColumnsMetadata> listTableColumnsStream(ConnectorSession session, SchemaTablePrefix prefix)
+    {
+        return Stream.empty();
     }
 
     /**
@@ -358,7 +367,7 @@ public interface ConnectorMetadata
         return properties.getTablePartitioning()
                 .map(partitioning -> {
                     Map<ColumnHandle, String> columnNamesByHandle = getColumnHandles(session, tableHandle).entrySet().stream()
-                            .collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey));
+                            .collect(toMap(Map.Entry::getValue, Map.Entry::getKey));
                     List<String> partitionColumns = partitioning.getPartitioningColumns().stream()
                             .map(columnNamesByHandle::get)
                             .collect(toList());
@@ -1131,6 +1140,15 @@ public interface ConnectorMetadata
     }
 
     default Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Redirects table to other table which may or may not be in the same catalog.
+     * Currently the engine tries to do redirection only for table reads and metadata listing.
+     */
+    default Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName)
     {
         return Optional.empty();
     }

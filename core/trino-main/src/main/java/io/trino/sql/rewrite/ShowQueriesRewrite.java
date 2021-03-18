@@ -234,26 +234,32 @@ final class ShowQueriesRewrite
             String catalogName = session.getCatalog().orElse(null);
             Optional<Expression> predicate = Optional.empty();
 
-            Optional<QualifiedName> tableName = showGrants.getTableName();
-            if (tableName.isPresent()) {
-                QualifiedObjectName qualifiedTableName = createQualifiedObjectName(session, showGrants, tableName.get());
+            Optional<QualifiedName> relationName = showGrants.getTableName();
+            if (relationName.isPresent()) {
+                QualifiedObjectName qualifiedRelationName = createQualifiedObjectName(session, showGrants, relationName.get());
+                Optional<ConnectorViewDefinition> viewDefinition = metadata.getView(session, qualifiedRelationName);
 
-                if (metadata.getView(session, qualifiedTableName).isEmpty() &&
-                        metadata.getTableHandle(session, qualifiedTableName).isEmpty()) {
-                    throw semanticException(TABLE_NOT_FOUND, showGrants, "Table '%s' does not exist", tableName);
+                // Check for table if view does not exist
+                if (viewDefinition.isEmpty()) {
+                    qualifiedRelationName = metadata.redirectTable(session, qualifiedRelationName);
+                    Optional<TableHandle> tableHandle = metadata.getTableHandle(session, qualifiedRelationName);
+
+                    if (tableHandle.isEmpty()) {
+                        throw semanticException(TABLE_NOT_FOUND, showGrants, "Table '%s' does not exist", relationName);
+                    }
                 }
 
-                catalogName = qualifiedTableName.getCatalogName();
+                catalogName = qualifiedRelationName.getCatalogName();
 
                 // Check is wrong here, it should be accessControl#checkCanShowGrants() which is not yet implemented
                 accessControl.checkCanShowTables(
                         session.toSecurityContext(),
-                        new CatalogSchemaName(catalogName, qualifiedTableName.getSchemaName()));
+                        new CatalogSchemaName(catalogName, qualifiedRelationName.getSchemaName()));
 
                 predicate = Optional.of(combineConjuncts(
                         metadata,
-                        equal(identifier("table_schema"), new StringLiteral(qualifiedTableName.getSchemaName())),
-                        equal(identifier("table_name"), new StringLiteral(qualifiedTableName.getObjectName()))));
+                        equal(identifier("table_schema"), new StringLiteral(qualifiedRelationName.getSchemaName())),
+                        equal(identifier("table_name"), new StringLiteral(qualifiedRelationName.getObjectName()))));
             }
             else {
                 if (catalogName == null) {
@@ -382,17 +388,25 @@ final class ShowQueriesRewrite
         @Override
         protected Node visitShowColumns(ShowColumns showColumns, Void context)
         {
-            QualifiedObjectName tableName = createQualifiedObjectName(session, showColumns, showColumns.getTable());
-            if (metadata.getCatalogHandle(session, tableName.getCatalogName()).isEmpty()) {
-                throw semanticException(CATALOG_NOT_FOUND, showColumns, "Catalog '%s' does not exist", tableName.getCatalogName());
+            QualifiedObjectName relationName = createQualifiedObjectName(session, showColumns, showColumns.getTable());
+            if (metadata.getCatalogHandle(session, relationName.getCatalogName()).isEmpty()) {
+                throw semanticException(CATALOG_NOT_FOUND, showColumns, "Catalog '%s' does not exist", relationName.getCatalogName());
             }
-            if (!metadata.schemaExists(session, new CatalogSchemaName(tableName.getCatalogName(), tableName.getSchemaName()))) {
-                throw semanticException(SCHEMA_NOT_FOUND, showColumns, "Schema '%s' does not exist", tableName.getSchemaName());
+            if (!metadata.schemaExists(session, new CatalogSchemaName(relationName.getCatalogName(), relationName.getSchemaName()))) {
+                throw semanticException(SCHEMA_NOT_FOUND, showColumns, "Schema '%s' does not exist", relationName.getSchemaName());
             }
-            Optional<ConnectorViewDefinition> view = metadata.getView(session, tableName);
-            Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
-            if (view.isEmpty() && tableHandle.isEmpty()) {
-                throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
+
+            Optional<ConnectorViewDefinition> view = metadata.getView(session, relationName);
+            Optional<TableHandle> tableHandle = Optional.empty();
+
+            // Check for table if view is not present
+            if (view.isEmpty()) {
+                relationName = metadata.redirectTable(session, relationName);
+                tableHandle = metadata.getTableHandle(session, relationName);
+
+                if (tableHandle.isEmpty()) {
+                    throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", relationName);
+                }
             }
 
             if (view.isEmpty() && tableHandle.isPresent()) {
@@ -411,11 +425,11 @@ final class ShowQueriesRewrite
                 // and we need to perform security filtering of the returned columns.
                 metadata.getTableMetadata(session, tableHandle.get());
             }
-            accessControl.checkCanShowColumns(session.toSecurityContext(), tableName.asCatalogSchemaTableName());
+            accessControl.checkCanShowColumns(session.toSecurityContext(), relationName.asCatalogSchemaTableName());
 
             Expression predicate = logicalAnd(
-                    equal(identifier("table_schema"), new StringLiteral(tableName.getSchemaName())),
-                    equal(identifier("table_name"), new StringLiteral(tableName.getObjectName())));
+                    equal(identifier("table_schema"), new StringLiteral(relationName.getSchemaName())),
+                    equal(identifier("table_name"), new StringLiteral(relationName.getObjectName())));
             Optional<String> likePattern = showColumns.getLikePattern();
             if (likePattern.isPresent()) {
                 Expression likePredicate = new LikePredicate(
@@ -431,7 +445,7 @@ final class ShowQueriesRewrite
                             aliasedName("data_type", "Type"),
                             aliasedNullToEmpty("extra_info", "Extra"),
                             aliasedNullToEmpty("comment", "Comment")),
-                    from(tableName.getCatalogName(), COLUMNS.getSchemaTableName()),
+                    from(relationName.getCatalogName(), COLUMNS.getSchemaTableName()),
                     predicate,
                     ordering(ascending("ordinal_position")));
         }
@@ -528,19 +542,20 @@ final class ShowQueriesRewrite
             }
 
             if (node.getType() == TABLE) {
-                QualifiedObjectName objectName = createQualifiedObjectName(session, node, node.getName());
-                Optional<ConnectorViewDefinition> viewDefinition = metadata.getView(session, objectName);
+                QualifiedObjectName relationName = createQualifiedObjectName(session, node, node.getName());
+                Optional<ConnectorViewDefinition> viewDefinition = metadata.getView(session, relationName);
 
                 if (viewDefinition.isPresent()) {
-                    throw semanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", objectName);
+                    throw semanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", relationName);
                 }
 
-                Optional<TableHandle> tableHandle = metadata.getTableHandle(session, objectName);
+                QualifiedObjectName tableName = metadata.redirectTable(session, relationName);
+                Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
                 if (tableHandle.isEmpty()) {
-                    throw semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", objectName);
+                    throw semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", tableName);
                 }
 
-                accessControl.checkCanShowCreateTable(session.toSecurityContext(), objectName);
+                accessControl.checkCanShowCreateTable(session.toSecurityContext(), tableName);
                 ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle.get()).getMetadata();
 
                 Map<String, PropertyMetadata<?>> allColumnProperties = metadata.getColumnPropertyManager().getAllProperties().get(tableHandle.get().getCatalogName());
@@ -548,17 +563,17 @@ final class ShowQueriesRewrite
                 List<TableElement> columns = connectorTableMetadata.getColumns().stream()
                         .filter(column -> !column.isHidden())
                         .map(column -> {
-                            List<Property> propertyNodes = buildProperties(objectName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
+                            List<Property> propertyNodes = buildProperties(tableName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
                             return new ColumnDefinition(new Identifier(column.getName()), toSqlType(column.getType()), column.isNullable(), propertyNodes, Optional.ofNullable(column.getComment()));
                         })
                         .collect(toImmutableList());
 
                 Map<String, Object> properties = connectorTableMetadata.getProperties();
                 Map<String, PropertyMetadata<?>> allTableProperties = metadata.getTablePropertyManager().getAllProperties().get(tableHandle.get().getCatalogName());
-                List<Property> propertyNodes = buildProperties(objectName, Optional.empty(), INVALID_TABLE_PROPERTY, properties, allTableProperties);
+                List<Property> propertyNodes = buildProperties(tableName, Optional.empty(), INVALID_TABLE_PROPERTY, properties, allTableProperties);
 
                 CreateTable createTable = new CreateTable(
-                        QualifiedName.of(objectName.getCatalogName(), objectName.getSchemaName(), objectName.getObjectName()),
+                        QualifiedName.of(relationName.getCatalogName(), relationName.getSchemaName(), relationName.getObjectName()),
                         columns,
                         false,
                         propertyNodes,

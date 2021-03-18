@@ -26,6 +26,7 @@ import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnsMetadata;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorOutputMetadata;
@@ -146,9 +147,9 @@ public interface Metadata
     ColumnMetadata getColumnMetadata(Session session, TableHandle tableHandle, ColumnHandle columnHandle);
 
     /**
-     * Gets the metadata for all columns that match the specified table prefix.
+     * Gets the columns metadata for all tables that match the specified prefix.
      */
-    Map<QualifiedObjectName, List<ColumnMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix);
+    Map<CatalogName, List<ColumnsMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix);
 
     /**
      * Creates a schema.
@@ -627,4 +628,9 @@ public interface Metadata
      * This method is called after security checks against the original table.
      */
     Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle);
+
+    /**
+     * Redirect to another table. Returns the original table name if the redirection doesn't happen.
+     */
+    QualifiedObjectName redirectTable(Session session, QualifiedObjectName tableName);
 }

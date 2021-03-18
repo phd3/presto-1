@@ -22,6 +22,7 @@ import io.trino.connector.CatalogName;
 import io.trino.security.AccessControl;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnsMetadata;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.GrantInfo;
@@ -132,22 +133,46 @@ public final class MetadataListing
 
     public static Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(Session session, Metadata metadata, AccessControl accessControl, QualifiedTablePrefix prefix)
     {
-        Map<SchemaTableName, List<ColumnMetadata>> tableColumns = metadata.listTableColumns(session, prefix).entrySet().stream()
-                .collect(toImmutableMap(entry -> entry.getKey().asSchemaTableName(), Entry::getValue));
+        Map<SchemaTableName, Optional<List<ColumnMetadata>>> tableColumns = metadata.listTableColumns(session, prefix).values().stream()
+                .flatMap(List::stream)
+                .collect(toImmutableMap(ColumnsMetadata::getTable, ColumnsMetadata::getColumns));
+
         Set<SchemaTableName> allowedTables = accessControl.filterTables(
                 session.toSecurityContext(),
                 prefix.getCatalogName(),
                 tableColumns.keySet());
 
         ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> result = ImmutableMap.builder();
-        for (Entry<SchemaTableName, List<ColumnMetadata>> entry : tableColumns.entrySet()) {
+        for (Entry<SchemaTableName, Optional<List<ColumnMetadata>>> entry : tableColumns.entrySet()) {
             if (!allowedTables.contains(entry.getKey())) {
                 continue;
             }
-            List<ColumnMetadata> columns = entry.getValue();
+
+            Optional<List<ColumnMetadata>> columnsOptional = entry.getValue();
+            List<ColumnMetadata> columns;
+            CatalogSchemaTableName catalogSchemaTableName;
+
+            if (columnsOptional.isPresent()) {
+                columns = columnsOptional.get();
+                catalogSchemaTableName = new CatalogSchemaTableName(prefix.getCatalogName(), entry.getKey());
+            }
+            else {
+                // Handle redirection before filterColumns check
+                QualifiedObjectName original = new QualifiedObjectName(prefix.getCatalogName(), entry.getKey().getSchemaName(), entry.getKey().getTableName());
+                QualifiedObjectName redirected = metadata.redirectTable(session, original);
+                Optional<TableHandle> redirectedTableHandle = metadata.getTableHandle(session, redirected);
+
+                if (redirectedTableHandle.isEmpty()) {
+                    continue;
+                }
+
+                columns = metadata.getTableMetadata(session, redirectedTableHandle.get()).getColumns();
+                catalogSchemaTableName = redirected.asCatalogSchemaTableName();
+            }
+
             Set<String> allowedColumns = accessControl.filterColumns(
                     session.toSecurityContext(),
-                    new CatalogSchemaTableName(prefix.getCatalogName(), entry.getKey()),
+                    catalogSchemaTableName,
                     columns.stream()
                             .map(ColumnMetadata::getName)
                             .collect(toImmutableSet()));

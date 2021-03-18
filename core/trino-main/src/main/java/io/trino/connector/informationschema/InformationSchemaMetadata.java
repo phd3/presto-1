@@ -353,7 +353,9 @@ public class InformationSchemaMetadata
                     .flatMap(prefix -> tables.get().stream()
                             .filter(this::isLowerCase)
                             .map(table -> new QualifiedObjectName(catalogName, prefix.getSchemaName().get(), table)))
-                    .filter(objectName -> !isColumnsEnumeratingTable(informationSchemaTable) || metadata.getTableHandle(session, objectName).isPresent() || metadata.getView(session, objectName).isPresent())
+                    .filter(objectName -> !isColumnsEnumeratingTable(informationSchemaTable) ||
+                            metadata.getTableHandle(session, metadata.redirectTable(session, objectName)).isPresent() ||
+                            metadata.getView(session, objectName).isPresent())
                     .filter(objectName -> predicate.isEmpty() || predicate.get().test(asFixedValues(objectName)))
                     .map(QualifiedObjectName::asQualifiedTablePrefix)
                     .collect(toImmutableSet());

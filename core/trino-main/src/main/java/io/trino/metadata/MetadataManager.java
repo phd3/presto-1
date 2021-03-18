@@ -54,6 +54,7 @@ import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnsMetadata;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
@@ -157,6 +158,8 @@ import static io.trino.spi.StandardErrorCode.INVALID_VIEW;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.SYNTAX_ERROR;
+import static io.trino.spi.StandardErrorCode.TABLE_REDIRECTION_LIMIT;
+import static io.trino.spi.StandardErrorCode.TABLE_REDIRECTION_LOOP;
 import static io.trino.spi.connector.ConnectorViewDefinition.ViewColumn;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BOXED_NULLABLE;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
@@ -183,6 +186,8 @@ import static java.util.Objects.requireNonNull;
 public final class MetadataManager
         implements Metadata
 {
+    private static final int MAX_TABLE_REDIRECTIONS = 10;
+
     private final FunctionRegistry functions;
     private final TypeOperators typeOperators;
     private final FunctionResolver functionResolver;
@@ -591,29 +596,28 @@ public final class MetadataManager
     }
 
     @Override
-    public Map<QualifiedObjectName, List<ColumnMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
+    public Map<CatalogName, List<ColumnsMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
     {
         requireNonNull(prefix, "prefix is null");
 
         Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, prefix.getCatalogName());
-        Map<QualifiedObjectName, List<ColumnMetadata>> tableColumns = new HashMap<>();
+
+        // Track column metadata for every object name to resolve ties between table and view
+        Map<SchemaTableName, Optional<List<ColumnMetadata>>> tableColumns = new HashMap<>();
         if (catalog.isPresent()) {
             CatalogMetadata catalogMetadata = catalog.get();
 
             SchemaTablePrefix tablePrefix = prefix.asSchemaTablePrefix();
             for (CatalogName catalogName : catalogMetadata.listConnectorIds()) {
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
-
                 ConnectorSession connectorSession = session.toConnectorSession(catalogName);
-                for (Entry<SchemaTableName, List<ColumnMetadata>> entry : metadata.listTableColumns(connectorSession, tablePrefix).entrySet()) {
-                    QualifiedObjectName tableName = new QualifiedObjectName(
-                            prefix.getCatalogName(),
-                            entry.getKey().getSchemaName(),
-                            entry.getKey().getTableName());
-                    tableColumns.put(tableName, entry.getValue());
-                }
 
-                // if table and view names overlap, the view wins
+                // Collect column metadata from tables
+                metadata.listTableColumnsStream(connectorSession, tablePrefix).forEach(columnsMetadata -> {
+                    tableColumns.put(columnsMetadata.getTable(), columnsMetadata.getColumns());
+                });
+
+                // Collect column metadata from views. if table and view names overlap, the view wins
                 for (Entry<QualifiedObjectName, ConnectorViewDefinition> entry : getViews(session, prefix).entrySet()) {
                     ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
                     for (ViewColumn column : entry.getValue().getColumns()) {
@@ -624,11 +628,15 @@ public final class MetadataManager
                             throw new TrinoException(INVALID_VIEW, format("Unknown type '%s' for column '%s' in view: %s", column.getType(), column.getName(), entry.getKey()));
                         }
                     }
-                    tableColumns.put(entry.getKey(), columns.build());
+                    tableColumns.put(entry.getKey().asSchemaTableName(), Optional.of(columns.build()));
                 }
             }
         }
-        return ImmutableMap.copyOf(tableColumns);
+        return ImmutableMap.of(
+                new CatalogName(prefix.getCatalogName()),
+                tableColumns.entrySet().stream()
+                        .map(entry -> new ColumnsMetadata(entry.getKey(), entry.getValue()))
+                        .collect(toImmutableList()));
     }
 
     @Override
@@ -1243,6 +1251,46 @@ public final class MetadataManager
     }
 
     @Override
+    public QualifiedObjectName redirectTable(Session session, QualifiedObjectName tableName)
+    {
+        requireNonNull(session, "session is null");
+        requireNonNull(tableName, "tableName is null");
+
+        Set<QualifiedObjectName> visitedTableNames = new LinkedHashSet<>();
+        for (int count = 0; count < MAX_TABLE_REDIRECTIONS; count++) {
+            if (!visitedTableNames.add(tableName)) {
+                String redirectionChain = new StringBuilder()
+                        .append(visitedTableNames.stream()
+                                .map(QualifiedObjectName::toString)
+                                .collect(Collectors.joining(" -> ")))
+                        .append(" -> ")
+                        .append(tableName)
+                        .toString();
+                throw new TrinoException(TABLE_REDIRECTION_LOOP, "Table redirections form a loop: " + redirectionChain);
+            }
+
+            Optional<QualifiedObjectName> redirectedTableName = Optional.empty();
+            Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, tableName.getCatalogName());
+
+            if (catalog.isPresent()) {
+                CatalogMetadata catalogMetadata = catalog.get();
+                CatalogName catalogName = catalogMetadata.getConnectorId(session, tableName);
+                ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
+                redirectedTableName = metadata.redirectTable(session.toConnectorSession(catalogName), tableName.asSchemaTableName())
+                        .map(name -> convertFromSchemaTableName(name.getCatalogName()).apply(name.getSchemaTableName()));
+            }
+            if (redirectedTableName.isEmpty()) {
+                return tableName;
+            }
+            tableName = redirectedTableName.get();
+        }
+        String redirections = visitedTableNames.stream()
+                .map(QualifiedObjectName::toString)
+                .collect(Collectors.joining(" -> "));
+        throw new TrinoException(TABLE_REDIRECTION_LIMIT, format("Too many table redirections (%d): %s", MAX_TABLE_REDIRECTIONS, redirections));
+    }
+
+    @Override
     public Optional<ResolvedIndex> resolveIndex(Session session, TableHandle tableHandle, Set<ColumnHandle> indexableColumns, Set<ColumnHandle> outputColumns, TupleDomain<ColumnHandle> tupleDomain)
     {
         CatalogName catalogName = tableHandle.getCatalogName();
@@ -1631,6 +1679,7 @@ public final class MetadataManager
         metadata.revokeSchemaPrivileges(session.toConnectorSession(catalogName), schemaName.getSchemaName(), privileges, grantee, grantOption);
     }
 
+    // TODO support table redirection
     @Override
     public List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix)
     {

@@ -493,7 +493,7 @@ class StatementAnalyzer
                 throw semanticException(TABLE_NOT_FOUND, refreshMaterializedView, "Storage Table '%s' for materialized view '%s' does not exist", storageName, name);
             }
 
-            QualifiedObjectName targetTable = createQualifiedObjectName(session, refreshMaterializedView, storageName.get());
+            QualifiedObjectName targetTable = metadata.redirectTable(session, createQualifiedObjectName(session, refreshMaterializedView, storageName.get()));
 
             // analyze the query that creates the data
             Query query = parseView(optionalView.get().getOriginalSql(), name, refreshMaterializedView);
@@ -1207,16 +1207,18 @@ class StatementAnalyzer
             }
 
             QualifiedObjectName name = createQualifiedObjectName(session, table, table.getName());
-            analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), name);
             Optional<TableHandle> tableHandle = Optional.empty();
 
             Optional<ConnectorMaterializedViewDefinition> optionalMaterializedView = metadata.getMaterializedView(session, name);
             if (optionalMaterializedView.isPresent()) {
+                analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), name);
                 if (metadata.getMaterializedViewFreshness(session, name).isMaterializedViewFresh()) {
                     // If materialized view is current, answer the query using the storage table
                     Optional<QualifiedName> storageName = getMaterializedViewStorageTableName(name);
                     if (storageName.isPresent()) {
-                        tableHandle = metadata.getTableHandle(session, createQualifiedObjectName(session, table, storageName.get()));
+                        tableHandle = metadata.getTableHandle(
+                                session,
+                                metadata.redirectTable(session, createQualifiedObjectName(session, table, storageName.get())));
                     }
                 }
                 else {
@@ -1228,8 +1230,12 @@ class StatementAnalyzer
                 // This is could be a reference to a logical view or a table
                 Optional<ConnectorViewDefinition> optionalView = metadata.getView(session, name);
                 if (optionalView.isPresent()) {
+                    analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), name);
                     return createScopeForView(table, name, scope, optionalView.get());
                 }
+
+                name = metadata.redirectTable(session, name);
+                analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), name);
                 tableHandle = metadata.getTableHandle(session, name);
             }
 
