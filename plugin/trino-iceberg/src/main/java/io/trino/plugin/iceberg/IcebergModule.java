@@ -40,6 +40,13 @@ import static org.weakref.jmx.guice.ExportBinder.newExporter;
 public class IcebergModule
         implements Module
 {
+    private final boolean trackOperations;
+
+    public IcebergModule(boolean trackOperations)
+    {
+        this.trackOperations = trackOperations;
+    }
+
     @Override
     public void configure(Binder binder)
     {
@@ -66,6 +73,20 @@ public class IcebergModule
         configBinder(binder).bindConfig(ParquetWriterConfig.class);
 
         binder.bind(IcebergMetadataFactory.class).in(Scopes.SINGLETON);
+
+        binder.bind(HiveTableOperationsProvider.class).in(Scopes.SINGLETON);
+        if (trackOperations) {
+            binder.bind(FileIoProvider.class).to(TrackingFileIoProvider.class).in(Scopes.SINGLETON);
+            binder.bind(FileIoProvider.class)
+                    .annotatedWith(ForTrackingFileIoProvider.class)
+                    .to(HdfsFileIoProvider.class)
+                    .in(Scopes.SINGLETON);
+            binder.bind(TrackingFileIoProvider.class).in(Scopes.SINGLETON);
+            newExporter(binder).export(TrackingFileIoProvider.class).withGeneratedName();
+        }
+        else {
+            binder.bind(FileIoProvider.class).to(HdfsFileIoProvider.class).in(Scopes.SINGLETON);
+        }
 
         jsonCodecBinder(binder).bindJsonCodec(CommitTaskData.class);
 

@@ -29,10 +29,12 @@ public class TestingIcebergConnectorFactory
         implements ConnectorFactory
 {
     private final Optional<HiveMetastore> metastore;
+    private final boolean trackTableOperations;
 
-    public TestingIcebergConnectorFactory(Optional<HiveMetastore> metastore)
+    public TestingIcebergConnectorFactory(Optional<HiveMetastore> metastore, boolean trackTableOperations)
     {
         this.metastore = requireNonNull(metastore, "metastore is null");
+        this.trackTableOperations = trackTableOperations;
     }
 
     @Override
@@ -50,6 +52,6 @@ public class TestingIcebergConnectorFactory
     @Override
     public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
     {
-        return createConnector(catalogName, config, context, metastore);
+        return createConnector(catalogName, config, context, metastore, trackTableOperations);
     }
 }

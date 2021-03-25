@@ -26,15 +26,17 @@ public class TestingIcebergPlugin
         implements Plugin
 {
     private final Optional<HiveMetastore> metastore;
+    private final boolean trackTableOperations;
 
-    public TestingIcebergPlugin(HiveMetastore metastore)
+    public TestingIcebergPlugin(HiveMetastore metastore, boolean trackTableOperations)
     {
         this.metastore = Optional.of(requireNonNull(metastore, "metastore is null"));
+        this.trackTableOperations = trackTableOperations;
     }
 
     @Override
     public Iterable<ConnectorFactory> getConnectorFactories()
     {
-        return ImmutableList.of(new TestingIcebergConnectorFactory(metastore));
+        return ImmutableList.of(new TestingIcebergConnectorFactory(metastore, trackTableOperations));
     }
 }

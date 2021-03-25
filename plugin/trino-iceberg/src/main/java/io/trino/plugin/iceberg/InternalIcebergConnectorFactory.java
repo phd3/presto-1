@@ -57,7 +57,12 @@ public final class InternalIcebergConnectorFactory
 {
     private InternalIcebergConnectorFactory() {}
 
-    public static Connector createConnector(String catalogName, Map<String, String> config, ConnectorContext context, Optional<HiveMetastore> metastore)
+    public static Connector createConnector(
+            String catalogName,
+            Map<String, String> config,
+            ConnectorContext context,
+            Optional<HiveMetastore> metastore,
+            boolean trackTableOperations)
     {
         ClassLoader classLoader = InternalIcebergConnectorFactory.class.getClassLoader();
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
@@ -66,7 +71,7 @@ public final class InternalIcebergConnectorFactory
                     new MBeanModule(),
                     new ConnectorObjectNameGeneratorModule(catalogName, "io.trino.plugin.iceberg", "trino.plugin.iceberg"),
                     new JsonModule(),
-                    new IcebergModule(),
+                    new IcebergModule(trackTableOperations),
                     new IcebergMetastoreModule(),
                     new HiveS3Module(),
                     new HiveGcsModule(),

@@ -16,7 +16,6 @@ package io.trino.plugin.iceberg;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceUtf8;
-import io.trino.plugin.hive.HdfsEnvironment;
 import io.trino.plugin.hive.HdfsEnvironment.HdfsContext;
 import io.trino.plugin.hive.authentication.HiveIdentity;
 import io.trino.plugin.hive.metastore.HiveMetastore;
@@ -96,11 +95,15 @@ final class IcebergUtil
         return ICEBERG_TABLE_TYPE_VALUE.equalsIgnoreCase(table.getParameters().get(TABLE_TYPE_PROP));
     }
 
-    public static Table getIcebergTable(HiveMetastore metastore, HdfsEnvironment hdfsEnvironment, ConnectorSession session, SchemaTableName table)
+    public static Table getIcebergTable(
+            HiveTableOperationsProvider tableOperationsProvider,
+            HiveMetastore metastore,
+            ConnectorSession session,
+            SchemaTableName table)
     {
         HdfsContext hdfsContext = new HdfsContext(session, table.getSchemaName(), table.getTableName());
         HiveIdentity identity = new HiveIdentity(session);
-        TableOperations operations = new HiveTableOperations(metastore, hdfsEnvironment, hdfsContext, identity, table.getSchemaName(), table.getTableName());
+        TableOperations operations = tableOperationsProvider.createTableOperations(metastore, hdfsContext, identity, table.getSchemaName(), table.getTableName());
         return new BaseTable(operations, quotedTableName(table));
     }
 
