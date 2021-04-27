@@ -1145,4 +1145,15 @@ public interface ConnectorMetadata
     {
         return Optional.empty();
     }
+
+    /**
+     * Redirects table to other table which may or may not be in the same catalog.
+     * Currently the engine tries to do redirection only for table reads and metadata listing.
+     *
+     * Also consider implementing streamTableColumns to support redirection for listing.
+     */
+    default Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName)
+    {
+        return Optional.empty();
+    }
 }

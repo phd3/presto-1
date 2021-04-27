@@ -866,4 +866,16 @@ public abstract class AbstractMockMetadata
     {
         throw new UnsupportedOperationException();
     }
+
+    @Override
+    public QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName tableName)
+    {
+        return tableName;
+    }
+
+    @Override
+    public Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName)
+    {
+        return getTableHandle(session, tableName);
+    }
 }

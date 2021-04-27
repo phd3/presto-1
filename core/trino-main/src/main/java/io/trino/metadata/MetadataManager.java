@@ -23,6 +23,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.common.collect.Streams;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 import io.airlift.slice.Slice;
 import io.trino.Session;
@@ -143,6 +144,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -163,6 +165,7 @@ import static io.trino.spi.StandardErrorCode.INVALID_VIEW;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.SYNTAX_ERROR;
+import static io.trino.spi.StandardErrorCode.TABLE_REDIRECTION_ERROR;
 import static io.trino.spi.connector.ConnectorViewDefinition.ViewColumn;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BOXED_NULLABLE;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
@@ -189,6 +192,8 @@ import static java.util.Objects.requireNonNull;
 public final class MetadataManager
         implements Metadata
 {
+    private static final int MAX_TABLE_REDIRECTIONS = 10;
+
     private final FunctionRegistry functions;
     private final TypeOperators typeOperators;
     private final FunctionResolver functionResolver;
@@ -1282,6 +1287,74 @@ public final class MetadataManager
         ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
         ConnectorSession connectorSession = session.toConnectorSession(catalogName);
         return metadata.applyTableScanRedirect(connectorSession, tableHandle.getConnectorHandle());
+    }
+
+    @Override
+    public QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName originalTableName)
+    {
+        requireNonNull(session, "session is null");
+        requireNonNull(originalTableName, "originalTableName is null");
+
+        QualifiedObjectName tableName = originalTableName;
+        Set<QualifiedObjectName> visitedTableNames = new LinkedHashSet<>();
+        visitedTableNames.add(tableName);
+
+        for (int count = 0; count < MAX_TABLE_REDIRECTIONS; count++) {
+            Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, tableName.getCatalogName());
+
+            if (catalog.isEmpty()) {
+                // Stop redirection
+                return tableName;
+            }
+
+            CatalogMetadata catalogMetadata = catalog.get();
+            CatalogName catalogName = catalogMetadata.getConnectorId(session, tableName);
+            ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
+
+            Optional<QualifiedObjectName> redirectedTableName = metadata.redirectTable(session.toConnectorSession(catalogName), tableName.asSchemaTableName())
+                    .map(name -> convertFromSchemaTableName(name.getCatalogName()).apply(name.getSchemaTableName()));
+
+            if (redirectedTableName.isEmpty()) {
+                return tableName;
+            }
+
+            tableName = redirectedTableName.get();
+
+            // Check for loop in redirection
+            if (!visitedTableNames.add(tableName)) {
+                throw new TrinoException(TABLE_REDIRECTION_ERROR,
+                        format("Table redirections form a loop: %s",
+                                Streams.concat(visitedTableNames.stream(), Stream.of(tableName))
+                                        .map(QualifiedObjectName::toString)
+                                        .collect(Collectors.joining(" -> "))));
+            }
+        }
+        throw new TrinoException(TABLE_REDIRECTION_ERROR, format("Table redirected too many times (%d): %s", MAX_TABLE_REDIRECTIONS, visitedTableNames));
+    }
+
+    @Override
+    public Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName)
+    {
+        QualifiedObjectName targetTableName = getRedirectedTableName(session, tableName);
+
+        if (targetTableName.equals(tableName)) {
+            return getTableHandle(session, tableName);
+        }
+
+        Optional<TableHandle> tableHandle = getTableHandle(session, targetTableName);
+
+        if (tableHandle.isPresent()) {
+            return tableHandle;
+        }
+
+        // Redirected table must exist
+        if (getCatalogHandle(session, targetTableName.getCatalogName()).isEmpty()) {
+            throw new TrinoException(TABLE_REDIRECTION_ERROR, format("Table '%s' redirected to '%s', but the target catalog '%s' does not exist", tableName, targetTableName, targetTableName.getCatalogName()));
+        }
+        if (!schemaExists(session, new CatalogSchemaName(targetTableName.getCatalogName(), targetTableName.getSchemaName()))) {
+            throw new TrinoException(TABLE_REDIRECTION_ERROR, format("Table '%s' redirected to '%s', but the target schema '%s' does not exist", tableName, targetTableName, targetTableName.getSchemaName()));
+        }
+        throw new TrinoException(TABLE_REDIRECTION_ERROR, format("Table '%s' redirected to '%s', but the target table '%s' does not exist", tableName, targetTableName, targetTableName));
     }
 
     @Override

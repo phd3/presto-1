@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
+import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableMetadata;
 import io.trino.spi.TrinoException;
@@ -87,6 +88,14 @@ public class ApplyTableScanRedirection
 
         Redirection redirection = getOnlyElement(redirections);
         CatalogSchemaTableName destinationTable = redirection.getDestinationTable();
+
+        QualifiedObjectName destinationObjectName = convertFromSchemaTableName(destinationTable.getCatalogName()).apply(destinationTable.getSchemaTableName());
+        QualifiedObjectName redirectedObjectName = metadata.getRedirectedTableName(context.getSession(), destinationObjectName);
+        if (!destinationObjectName.equals(redirectedObjectName)) {
+            throw new TrinoException(NOT_SUPPORTED,
+                    format("Further redirection of destination table '%s' to '%s' is not supported", destinationObjectName, redirectedObjectName));
+        }
+
         TableMetadata tableMetadata = metadata.getTableMetadata(context.getSession(), scanNode.getTable());
         CatalogSchemaTableName sourceTable = new CatalogSchemaTableName(tableMetadata.getCatalogName().getCatalogName(), tableMetadata.getTable());
         if (destinationTable.equals(sourceTable)) {

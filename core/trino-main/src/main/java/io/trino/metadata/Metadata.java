@@ -640,4 +640,14 @@ public interface Metadata
      * This method is called after security checks against the original table.
      */
     Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle);
+
+    /**
+     * Redirect to another table. Returns the original table name if the redirection doesn't happen.
+     */
+    QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName tableName);
+
+    /**
+     * Get the target table handle after performing redirection.
+     */
+    Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName);
 }
