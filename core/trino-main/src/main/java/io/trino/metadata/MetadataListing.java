@@ -20,10 +20,11 @@ import com.google.common.collect.ImmutableSortedSet;
 import io.trino.Session;
 import io.trino.connector.CatalogName;
 import io.trino.security.AccessControl;
-import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.security.GrantInfo;
 
 import java.util.List;
@@ -37,6 +38,8 @@ import java.util.SortedSet;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.trino.spi.StandardErrorCode.TABLE_REDIRECTION_ERROR;
 
 public final class MetadataListing
 {
@@ -132,31 +135,65 @@ public final class MetadataListing
 
     public static Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(Session session, Metadata metadata, AccessControl accessControl, QualifiedTablePrefix prefix)
     {
-        Map<SchemaTableName, List<ColumnMetadata>> tableColumns = metadata.listTableColumns(session, prefix).entrySet().stream()
-                .collect(toImmutableMap(entry -> entry.getKey().asSchemaTableName(), Entry::getValue));
+        List<TableColumnsMetadata> catalogColumns = getOnlyElement(metadata.listTableColumns(session, prefix).values(), List.of());
+
+        Map<SchemaTableName, Optional<List<ColumnMetadata>>> tableColumns = catalogColumns.stream()
+                .collect(toImmutableMap(TableColumnsMetadata::getTable, TableColumnsMetadata::getColumns));
+
         Set<SchemaTableName> allowedTables = accessControl.filterTables(
                 session.toSecurityContext(),
                 prefix.getCatalogName(),
                 tableColumns.keySet());
 
         ImmutableMap.Builder<SchemaTableName, List<ColumnMetadata>> result = ImmutableMap.builder();
-        for (Entry<SchemaTableName, List<ColumnMetadata>> entry : tableColumns.entrySet()) {
-            if (!allowedTables.contains(entry.getKey())) {
-                continue;
+
+        tableColumns.forEach((table, columnsOptional) -> {
+            if (!allowedTables.contains(table)) {
+                return;
             }
-            List<ColumnMetadata> columns = entry.getValue();
+
+            QualifiedObjectName originalTableName = new QualifiedObjectName(prefix.getCatalogName(), table.getSchemaName(), table.getTableName());
+            List<ColumnMetadata> columns;
+
+            if (columnsOptional.isPresent()) {
+                columns = columnsOptional.get();
+            }
+            else {
+                Optional<TableHandle> redirectedTableHandle = Optional.empty();
+                try {
+                    // Handle redirection before filterColumns check
+                    redirectedTableHandle = metadata.getRedirectedTableHandle(session, originalTableName);
+                }
+                catch (TrinoException e) {
+                    if (e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {
+                        // Ignore redirection errors
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+
+                if (redirectedTableHandle.isEmpty()) {
+                    return;
+                }
+
+                columns = metadata.getTableMetadata(session, redirectedTableHandle.get()).getColumns();
+            }
+
             Set<String> allowedColumns = accessControl.filterColumns(
                     session.toSecurityContext(),
-                    new CatalogSchemaTableName(prefix.getCatalogName(), entry.getKey()),
+                    // Use redirected table name for applying column filters
+                    metadata.getRedirectedTableName(session, originalTableName).asCatalogSchemaTableName(),
                     columns.stream()
                             .map(ColumnMetadata::getName)
                             .collect(toImmutableSet()));
             result.put(
-                    entry.getKey(),
+                    table,
                     columns.stream()
                             .filter(column -> allowedColumns.contains(column.getName()))
                             .collect(toImmutableList()));
-        }
+        });
+
         return result.build();
     }
 }

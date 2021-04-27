@@ -91,6 +91,7 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.SortItem;
 import io.trino.spi.connector.SystemTable;
+import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.connector.TopNApplicationResult;
 import io.trino.spi.expression.ConnectorExpression;
@@ -638,12 +639,14 @@ public final class MetadataManager
     }
 
     @Override
-    public Map<QualifiedObjectName, List<ColumnMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
+    public Map<CatalogName, List<TableColumnsMetadata>> listTableColumns(Session session, QualifiedTablePrefix prefix)
     {
         requireNonNull(prefix, "prefix is null");
 
         Optional<CatalogMetadata> catalog = getOptionalCatalogMetadata(session, prefix.getCatalogName());
-        Map<QualifiedObjectName, List<ColumnMetadata>> tableColumns = new HashMap<>();
+
+        // Track column metadata for every object name to resolve ties between table and view
+        Map<SchemaTableName, Optional<List<ColumnMetadata>>> tableColumns = new HashMap<>();
         if (catalog.isPresent()) {
             CatalogMetadata catalogMetadata = catalog.get();
 
@@ -652,15 +655,12 @@ public final class MetadataManager
                 ConnectorMetadata metadata = catalogMetadata.getMetadataFor(catalogName);
 
                 ConnectorSession connectorSession = session.toConnectorSession(catalogName);
-                for (Entry<SchemaTableName, List<ColumnMetadata>> entry : metadata.listTableColumns(connectorSession, tablePrefix).entrySet()) {
-                    QualifiedObjectName tableName = new QualifiedObjectName(
-                            prefix.getCatalogName(),
-                            entry.getKey().getSchemaName(),
-                            entry.getKey().getTableName());
-                    tableColumns.put(tableName, entry.getValue());
-                }
 
-                // if table and view names overlap, the view wins
+                // Collect column metadata from tables
+                metadata.streamTableColumns(connectorSession, tablePrefix)
+                        .forEach(columnsMetadata -> tableColumns.put(columnsMetadata.getTable(), columnsMetadata.getColumns()));
+
+                // Collect column metadata from views. if table and view names overlap, the view wins
                 for (Entry<QualifiedObjectName, ConnectorViewDefinition> entry : getViews(session, prefix).entrySet()) {
                     ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
                     for (ViewColumn column : entry.getValue().getColumns()) {
@@ -671,11 +671,15 @@ public final class MetadataManager
                             throw new TrinoException(INVALID_VIEW, format("Unknown type '%s' for column '%s' in view: %s", column.getType(), column.getName(), entry.getKey()));
                         }
                     }
-                    tableColumns.put(entry.getKey(), columns.build());
+                    tableColumns.put(entry.getKey().asSchemaTableName(), Optional.of(columns.build()));
                 }
             }
         }
-        return ImmutableMap.copyOf(tableColumns);
+        return ImmutableMap.of(
+                new CatalogName(prefix.getCatalogName()),
+                tableColumns.entrySet().stream()
+                        .map(entry -> new TableColumnsMetadata(entry.getKey(), entry.getValue()))
+                        .collect(toImmutableList()));
     }
 
     @Override
@@ -1746,6 +1750,7 @@ public final class MetadataManager
         metadata.revokeSchemaPrivileges(session.toConnectorSession(catalogName), schemaName.getSchemaName(), privileges, grantee, grantOption);
     }
 
+    // TODO support table redirection
     @Override
     public List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix)
     {

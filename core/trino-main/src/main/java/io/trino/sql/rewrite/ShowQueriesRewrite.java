@@ -231,6 +231,7 @@ final class ShowQueriesRewrite
         @Override
         protected Node visitShowGrants(ShowGrants showGrants, Void context)
         {
+            // TODO: make this method redirection aware
             String catalogName = session.getCatalog().orElse(null);
             Optional<Expression> predicate = Optional.empty();
 
@@ -389,10 +390,16 @@ final class ShowQueriesRewrite
             if (!metadata.schemaExists(session, new CatalogSchemaName(tableName.getCatalogName(), tableName.getSchemaName()))) {
                 throw semanticException(SCHEMA_NOT_FOUND, showColumns, "Schema '%s' does not exist", tableName.getSchemaName());
             }
+
             Optional<ConnectorViewDefinition> view = metadata.getView(session, tableName);
-            Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
-            if (view.isEmpty() && tableHandle.isEmpty()) {
-                throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
+            Optional<TableHandle> tableHandle = Optional.empty();
+
+            // Check for table if view is not present
+            if (view.isEmpty()) {
+                tableHandle = metadata.getRedirectedTableHandle(session, tableName);
+                if (tableHandle.isEmpty()) {
+                    throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
+                }
             }
 
             if (view.isEmpty() && tableHandle.isPresent()) {
@@ -411,11 +418,13 @@ final class ShowQueriesRewrite
                 // and we need to perform security filtering of the returned columns.
                 metadata.getTableMetadata(session, tableHandle.get());
             }
-            accessControl.checkCanShowColumns(session.toSecurityContext(), tableName.asCatalogSchemaTableName());
+
+            QualifiedObjectName targetTableName = metadata.getRedirectedTableName(session, tableName);
+            accessControl.checkCanShowColumns(session.toSecurityContext(), targetTableName.asCatalogSchemaTableName());
 
             Expression predicate = logicalAnd(
-                    equal(identifier("table_schema"), new StringLiteral(tableName.getSchemaName())),
-                    equal(identifier("table_name"), new StringLiteral(tableName.getObjectName())));
+                    equal(identifier("table_schema"), new StringLiteral(targetTableName.getSchemaName())),
+                    equal(identifier("table_name"), new StringLiteral(targetTableName.getObjectName())));
             Optional<String> likePattern = showColumns.getLikePattern();
             if (likePattern.isPresent()) {
                 Expression likePredicate = new LikePredicate(
@@ -431,7 +440,7 @@ final class ShowQueriesRewrite
                             aliasedName("data_type", "Type"),
                             aliasedNullToEmpty("extra_info", "Extra"),
                             aliasedNullToEmpty("comment", "Comment")),
-                    from(tableName.getCatalogName(), COLUMNS.getSchemaTableName()),
+                    from(targetTableName.getCatalogName(), COLUMNS.getSchemaTableName()),
                     predicate,
                     ordering(ascending("ordinal_position")));
         }
@@ -547,12 +556,13 @@ final class ShowQueriesRewrite
                     throw semanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", objectName);
                 }
 
-                Optional<TableHandle> tableHandle = metadata.getTableHandle(session, objectName);
+                Optional<TableHandle> tableHandle = metadata.getRedirectedTableHandle(session, objectName);
                 if (tableHandle.isEmpty()) {
                     throw semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", objectName);
                 }
 
-                accessControl.checkCanShowCreateTable(session.toSecurityContext(), objectName);
+                QualifiedObjectName targetTableName = metadata.getRedirectedTableName(session, objectName);
+                accessControl.checkCanShowCreateTable(session.toSecurityContext(), targetTableName);
                 ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle.get()).getMetadata();
 
                 Map<String, PropertyMetadata<?>> allColumnProperties = metadata.getColumnPropertyManager().getAllProperties().get(tableHandle.get().getCatalogName());
@@ -560,14 +570,14 @@ final class ShowQueriesRewrite
                 List<TableElement> columns = connectorTableMetadata.getColumns().stream()
                         .filter(column -> !column.isHidden())
                         .map(column -> {
-                            List<Property> propertyNodes = buildProperties(objectName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
+                            List<Property> propertyNodes = buildProperties(targetTableName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
                             return new ColumnDefinition(new Identifier(column.getName()), toSqlType(column.getType()), column.isNullable(), propertyNodes, Optional.ofNullable(column.getComment()));
                         })
                         .collect(toImmutableList());
 
                 Map<String, Object> properties = connectorTableMetadata.getProperties();
                 Map<String, PropertyMetadata<?>> allTableProperties = metadata.getTablePropertyManager().getAllProperties().get(tableHandle.get().getCatalogName());
-                List<Property> propertyNodes = buildProperties(objectName, Optional.empty(), INVALID_TABLE_PROPERTY, properties, allTableProperties);
+                List<Property> propertyNodes = buildProperties(targetTableName, Optional.empty(), INVALID_TABLE_PROPERTY, properties, allTableProperties);
 
                 CreateTable createTable = new CreateTable(
                         QualifiedName.of(objectName.getCatalogName(), objectName.getSchemaName(), objectName.getObjectName()),
