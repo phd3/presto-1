@@ -32,6 +32,7 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.NewTableLayout;
 import io.trino.metadata.OperatorNotFoundException;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.RedirectionAwareTableHandle;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableMetadata;
@@ -1313,8 +1314,9 @@ class StatementAnalyzer
             }
 
             // This can only be a table
-            Optional<TableHandle> tableHandle = metadata.getRedirectedTableHandle(session, name);
-            QualifiedObjectName targetTableName = metadata.getRedirectedTableName(session, name);
+            RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, name);
+            Optional<TableHandle> tableHandle = redirectionAwareTableHandle.getTableHandle();
+            QualifiedObjectName targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(name);
             analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), targetTableName);
 
             if (tableHandle.isEmpty()) {
@@ -1376,9 +1378,9 @@ class StatementAnalyzer
 
         private void checkStorageTableNotRedirected(QualifiedObjectName source)
         {
-            QualifiedObjectName target = metadata.getRedirectedTableName(session, source);
-            if (!source.equals(target)) {
-                throw new TrinoException(NOT_SUPPORTED, format("Redirection of materialized view storage table '%s' to '%s' is not supported", source, target));
+            Optional<QualifiedObjectName> redirectedTableName = metadata.getRedirectionAwareTableHandle(session, source).getRedirectedTableName();
+            if (redirectedTableName.isPresent()) {
+                throw new TrinoException(NOT_SUPPORTED, format("Redirection of materialized view storage table '%s' to '%s' is not supported", source, redirectedTableName.get()));
             }
         }
 

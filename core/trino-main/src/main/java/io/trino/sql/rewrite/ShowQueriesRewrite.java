@@ -28,6 +28,7 @@ import io.trino.metadata.FunctionMetadata;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.MetadataUtil;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.RedirectionAwareTableHandle;
 import io.trino.metadata.SessionPropertyManager.SessionPropertyValue;
 import io.trino.metadata.TableHandle;
 import io.trino.security.AccessControl;
@@ -392,14 +393,17 @@ final class ShowQueriesRewrite
             }
 
             Optional<ConnectorViewDefinition> view = metadata.getView(session, tableName);
+            QualifiedObjectName targetTableName = tableName;
             Optional<TableHandle> tableHandle = Optional.empty();
 
             // Check for table if view is not present
             if (view.isEmpty()) {
-                tableHandle = metadata.getRedirectedTableHandle(session, tableName);
+                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, tableName);
+                tableHandle = redirectionAwareTableHandle.getTableHandle();
                 if (tableHandle.isEmpty()) {
                     throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
                 }
+                targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(tableName);
             }
 
             if (view.isEmpty() && tableHandle.isPresent()) {
@@ -419,7 +423,6 @@ final class ShowQueriesRewrite
                 metadata.getTableMetadata(session, tableHandle.get());
             }
 
-            QualifiedObjectName targetTableName = metadata.getRedirectedTableName(session, tableName);
             accessControl.checkCanShowColumns(session.toSecurityContext(), targetTableName.asCatalogSchemaTableName());
 
             Expression predicate = logicalAnd(
@@ -556,12 +559,13 @@ final class ShowQueriesRewrite
                     throw semanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", objectName);
                 }
 
-                Optional<TableHandle> tableHandle = metadata.getRedirectedTableHandle(session, objectName);
+                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, objectName);
+                Optional<TableHandle> tableHandle = redirectionAwareTableHandle.getTableHandle();
                 if (tableHandle.isEmpty()) {
                     throw semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", objectName);
                 }
 
-                QualifiedObjectName targetTableName = metadata.getRedirectedTableName(session, objectName);
+                QualifiedObjectName targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(objectName);
                 accessControl.checkCanShowCreateTable(session.toSecurityContext(), targetTableName);
                 ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle.get()).getMetadata();
 

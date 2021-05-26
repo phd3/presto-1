@@ -79,6 +79,7 @@ import java.util.Set;
 
 import static io.trino.metadata.FunctionId.toFunctionId;
 import static io.trino.metadata.FunctionKind.SCALAR;
+import static io.trino.metadata.RedirectionAwareTableHandle.noRedirection;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 
@@ -869,14 +870,8 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName tableName)
+    public RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName)
     {
-        return tableName;
-    }
-
-    @Override
-    public Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName)
-    {
-        return getTableHandle(session, tableName);
+        return noRedirection(getTableHandle(session, tableName));
     }
 }

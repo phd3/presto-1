@@ -644,12 +644,8 @@ public interface Metadata
     Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle);
 
     /**
-     * Redirect to another table. Returns the original table name if the redirection doesn't happen.
-     */
-    QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName tableName);
-
-    /**
      * Get the target table handle after performing redirection.
+     *
      */
-    Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName);
+    RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName);
 }

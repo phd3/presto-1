@@ -365,7 +365,7 @@ public class InformationSchemaMetadata
                             // Table redirection to enumerate columns from target table happens later in
                             // MetadataListing#listTableColumns, but also applying it here to avoid incorrect
                             // filtering in case the source table does not exist or there is a problem with redirection.
-                            return metadata.getRedirectedTableHandle(session, objectName).isPresent();
+                            return metadata.getRedirectionAwareTableHandle(session, objectName).getTableHandle().isPresent();
                         }
                         catch (TrinoException e) {
                             if (e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {

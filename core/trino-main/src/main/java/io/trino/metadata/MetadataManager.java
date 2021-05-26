@@ -157,6 +157,8 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.primitives.Primitives.wrap;
 import static io.trino.metadata.FunctionKind.AGGREGATE;
 import static io.trino.metadata.QualifiedObjectName.convertFromSchemaTableName;
+import static io.trino.metadata.RedirectionAwareTableHandle.noRedirection;
+import static io.trino.metadata.RedirectionAwareTableHandle.withRedirectionTo;
 import static io.trino.metadata.Signature.mangleOperatorName;
 import static io.trino.metadata.SignatureBinder.applyBoundVariables;
 import static io.trino.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_ERROR;
@@ -193,7 +195,8 @@ import static java.util.Objects.requireNonNull;
 public final class MetadataManager
         implements Metadata
 {
-    private static final int MAX_TABLE_REDIRECTIONS = 10;
+    @VisibleForTesting
+    public static final int MAX_TABLE_REDIRECTIONS = 10;
 
     private final FunctionRegistry functions;
     private final TypeOperators typeOperators;
@@ -1293,8 +1296,7 @@ public final class MetadataManager
         return metadata.applyTableScanRedirect(connectorSession, tableHandle.getConnectorHandle());
     }
 
-    @Override
-    public QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName originalTableName)
+    private QualifiedObjectName getRedirectedTableName(Session session, QualifiedObjectName originalTableName)
     {
         requireNonNull(session, "session is null");
         requireNonNull(originalTableName, "originalTableName is null");
@@ -1337,18 +1339,16 @@ public final class MetadataManager
     }
 
     @Override
-    public Optional<TableHandle> getRedirectedTableHandle(Session session, QualifiedObjectName tableName)
+    public RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName)
     {
         QualifiedObjectName targetTableName = getRedirectedTableName(session, tableName);
-
         if (targetTableName.equals(tableName)) {
-            return getTableHandle(session, tableName);
+            return noRedirection(getTableHandle(session, tableName));
         }
 
         Optional<TableHandle> tableHandle = getTableHandle(session, targetTableName);
-
         if (tableHandle.isPresent()) {
-            return tableHandle;
+            return withRedirectionTo(targetTableName, tableHandle.get());
         }
 
         // Redirected table must exist

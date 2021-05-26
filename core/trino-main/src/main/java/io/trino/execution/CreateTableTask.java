@@ -23,6 +23,7 @@ import io.trino.connector.CatalogName;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.RedirectionAwareTableHandle;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableMetadata;
 import io.trino.security.AccessControl;
@@ -172,10 +173,11 @@ public class CreateTableTask
                     throw semanticException(CATALOG_NOT_FOUND, statement, "LIKE table catalog '%s' does not exist", originalLikeTableName.getCatalogName());
                 }
 
-                TableHandle likeTable = metadata.getRedirectedTableHandle(session, originalLikeTableName)
+                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, originalLikeTableName);
+                TableHandle likeTable = redirectionAwareTableHandle.getTableHandle()
                         .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, statement, "LIKE table '%s' does not exist", originalLikeTableName));
 
-                QualifiedObjectName likeTableName = metadata.getRedirectedTableName(session, originalLikeTableName);
+                QualifiedObjectName likeTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(originalLikeTableName);
                 if (!tableName.getCatalogName().equals(likeTableName.getCatalogName())) {
                     String message = "CREATE TABLE LIKE across catalogs is not supported";
                     if (!originalLikeTableName.equals(likeTableName)) {

@@ -154,15 +154,27 @@ public final class MetadataListing
 
             QualifiedObjectName originalTableName = new QualifiedObjectName(prefix.getCatalogName(), table.getSchemaName(), table.getTableName());
             List<ColumnMetadata> columns;
+            Optional<QualifiedObjectName> targetTableName = Optional.empty();
 
             if (columnsOptional.isPresent()) {
                 columns = columnsOptional.get();
             }
             else {
-                Optional<TableHandle> redirectedTableHandle = Optional.empty();
+                TableHandle targetTableHandle = null;
+                boolean redirectionSucceeded = false;
+
                 try {
                     // Handle redirection before filterColumns check
-                    redirectedTableHandle = metadata.getRedirectedTableHandle(session, originalTableName);
+                    RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, originalTableName);
+                    targetTableName = redirectionAwareTableHandle.getRedirectedTableName();
+
+                    // The target table name should be non-empty. If it is empty, it means that there is an
+                    // inconsistency in the connector's implementation of ConnectorMetadata#streamTableColumns and
+                    // ConnectorMetadata#redirectTable.
+                    if (targetTableName.isPresent()) {
+                        redirectionSucceeded = true;
+                        targetTableHandle = redirectionAwareTableHandle.getTableHandle().orElseThrow();
+                    }
                 }
                 catch (TrinoException e) {
                     if (e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {
@@ -173,17 +185,17 @@ public final class MetadataListing
                     }
                 }
 
-                if (redirectedTableHandle.isEmpty()) {
+                if (redirectionSucceeded == false) {
                     return;
                 }
 
-                columns = metadata.getTableMetadata(session, redirectedTableHandle.get()).getColumns();
+                columns = metadata.getTableMetadata(session, targetTableHandle).getColumns();
             }
 
             Set<String> allowedColumns = accessControl.filterColumns(
                     session.toSecurityContext(),
                     // Use redirected table name for applying column filters
-                    metadata.getRedirectedTableName(session, originalTableName).asCatalogSchemaTableName(),
+                    targetTableName.orElse(originalTableName).asCatalogSchemaTableName(),
                     columns.stream()
                             .map(ColumnMetadata::getName)
                             .collect(toImmutableSet()));

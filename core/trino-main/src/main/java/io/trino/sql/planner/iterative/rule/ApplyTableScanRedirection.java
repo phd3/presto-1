@@ -90,10 +90,10 @@ public class ApplyTableScanRedirection
         CatalogSchemaTableName destinationTable = redirection.getDestinationTable();
 
         QualifiedObjectName destinationObjectName = convertFromSchemaTableName(destinationTable.getCatalogName()).apply(destinationTable.getSchemaTableName());
-        QualifiedObjectName redirectedObjectName = metadata.getRedirectedTableName(context.getSession(), destinationObjectName);
-        if (!destinationObjectName.equals(redirectedObjectName)) {
+        Optional<QualifiedObjectName> redirectedObjectName = metadata.getRedirectionAwareTableHandle(context.getSession(), destinationObjectName).getRedirectedTableName();
+        if (redirectedObjectName.isPresent()) {
             throw new TrinoException(NOT_SUPPORTED,
-                    format("Further redirection of destination table '%s' to '%s' is not supported", destinationObjectName, redirectedObjectName));
+                    format("Further redirection of destination table '%s' to '%s' is not supported", destinationObjectName, redirectedObjectName.get()));
         }
 
         TableMetadata tableMetadata = metadata.getTableMetadata(context.getSession(), scanNode.getTable());
