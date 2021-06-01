@@ -173,11 +173,11 @@ public class CreateTableTask
                     throw semanticException(CATALOG_NOT_FOUND, statement, "LIKE table catalog '%s' does not exist", originalLikeTableName.getCatalogName());
                 }
 
-                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, originalLikeTableName);
-                TableHandle likeTable = redirectionAwareTableHandle.getTableHandle()
+                RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalLikeTableName);
+                TableHandle likeTable = redirection.getTableHandle()
                         .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, statement, "LIKE table '%s' does not exist", originalLikeTableName));
 
-                QualifiedObjectName likeTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(originalLikeTableName);
+                QualifiedObjectName likeTableName = redirection.getRedirectedTableName().orElse(originalLikeTableName);
                 if (!tableName.getCatalogName().equals(likeTableName.getCatalogName())) {
                     String message = "CREATE TABLE LIKE across catalogs is not supported";
                     if (!originalLikeTableName.equals(likeTableName)) {

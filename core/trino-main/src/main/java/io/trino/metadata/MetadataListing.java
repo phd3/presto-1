@@ -165,22 +165,20 @@ public final class MetadataListing
 
                 try {
                     // Handle redirection before filterColumns check
-                    RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, originalTableName);
-                    targetTableName = redirectionAwareTableHandle.getRedirectedTableName();
+                    RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalTableName);
+                    targetTableName = redirection.getRedirectedTableName();
 
                     // The target table name should be non-empty. If it is empty, it means that there is an
                     // inconsistency in the connector's implementation of ConnectorMetadata#streamTableColumns and
                     // ConnectorMetadata#redirectTable.
                     if (targetTableName.isPresent()) {
                         redirectionSucceeded = true;
-                        targetTableHandle = redirectionAwareTableHandle.getTableHandle().orElseThrow();
+                        targetTableHandle = redirection.getTableHandle().orElseThrow();
                     }
                 }
                 catch (TrinoException e) {
-                    if (e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {
-                        // Ignore redirection errors
-                    }
-                    else {
+                    // Ignore redirection errors
+                    if (!e.getErrorCode().equals(TABLE_REDIRECTION_ERROR.toErrorCode())) {
                         throw e;
                     }
                 }

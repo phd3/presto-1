@@ -1314,9 +1314,9 @@ class StatementAnalyzer
             }
 
             // This can only be a table
-            RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, name);
-            Optional<TableHandle> tableHandle = redirectionAwareTableHandle.getTableHandle();
-            QualifiedObjectName targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(name);
+            RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, name);
+            Optional<TableHandle> tableHandle = redirection.getTableHandle();
+            QualifiedObjectName targetTableName = redirection.getRedirectedTableName().orElse(name);
             analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), targetTableName);
 
             if (tableHandle.isEmpty()) {
@@ -1378,10 +1378,9 @@ class StatementAnalyzer
 
         private void checkStorageTableNotRedirected(QualifiedObjectName source)
         {
-            Optional<QualifiedObjectName> redirectedTableName = metadata.getRedirectionAwareTableHandle(session, source).getRedirectedTableName();
-            if (redirectedTableName.isPresent()) {
-                throw new TrinoException(NOT_SUPPORTED, format("Redirection of materialized view storage table '%s' to '%s' is not supported", source, redirectedTableName.get()));
-            }
+            metadata.getRedirectionAwareTableHandle(session, source).getRedirectedTableName().ifPresent(name -> {
+                throw new TrinoException(NOT_SUPPORTED, format("Redirection of materialized view storage table '%s' to '%s' is not supported", source, name));
+            });
         }
 
         private void analyzeFiltersAndMasks(Table table, QualifiedObjectName name, Optional<TableHandle> tableHandle, List<Field> fields, String authorization)

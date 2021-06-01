@@ -398,12 +398,12 @@ final class ShowQueriesRewrite
 
             // Check for table if view is not present
             if (view.isEmpty()) {
-                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, tableName);
-                tableHandle = redirectionAwareTableHandle.getTableHandle();
+                RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, tableName);
+                tableHandle = redirection.getTableHandle();
                 if (tableHandle.isEmpty()) {
                     throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
                 }
-                targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(tableName);
+                targetTableName = redirection.getRedirectedTableName().orElse(tableName);
             }
 
             if (view.isEmpty() && tableHandle.isPresent()) {
@@ -559,13 +559,13 @@ final class ShowQueriesRewrite
                     throw semanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", objectName);
                 }
 
-                RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, objectName);
-                Optional<TableHandle> tableHandle = redirectionAwareTableHandle.getTableHandle();
+                RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, objectName);
+                Optional<TableHandle> tableHandle = redirection.getTableHandle();
                 if (tableHandle.isEmpty()) {
                     throw semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", objectName);
                 }
 
-                QualifiedObjectName targetTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(objectName);
+                QualifiedObjectName targetTableName = redirection.getRedirectedTableName().orElse(objectName);
                 accessControl.checkCanShowCreateTable(session.toSecurityContext(), targetTableName);
                 ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle.get()).getMetadata();
 
